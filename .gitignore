@@ -1,0 +1,10 @@
+# Virtual environment
+.venv/
+
+# Secrets (copy .env.example to .env)
+.env
+
+# Python / pytest
+__pycache__/
+*.py[cod]
+.pytest_cache/

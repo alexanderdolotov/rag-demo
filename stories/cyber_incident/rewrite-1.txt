@@ -1,0 +1,5 @@
+Lakemont Logistics told regulators on Monday that hackers had got into its computer systems. The company noticed that someone without permission had entered part of its office network on May 6, and it shut down the affected computers straight away to stop the problem spreading. The programs it uses to schedule trucks and run its warehouses were out of action for four days, and about 11 percent of shipments arrived late.
+
+Lakemont has hired an outside investigations firm and told federal police. So far it has found no sign that customers' card details or staff records were seen, though checks are still under way. It does not expect the break-in to stop it from keeping its promises under current contracts.
+
+Everything was working normally again by May 10. The company has changed passwords across its network and set up closer monitoring. It expects the breach to cost between $15 million and $20 million this quarter, including the investigation and lost sales, and believes insurance will cover most of that. The chief executive said sorry to customers whose deliveries were late and promised credits to those affected.

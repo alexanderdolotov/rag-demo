@@ -1,0 +1,165 @@
+"""
+Load the story files (stories/) into OpenSearch and Neo4j, once, so both databases hold exactly the same corpus.
+
+    python data_load.py             # load what is missing; does nothing when both already hold this corpus;
+                                        # refuses to touch a database that holds a different one
+    python data_load.py --reload    # first delete the story data in both databases, then load again
+    python data_load.py --status    # what each database holds compared with the files; changes nothing
+
+--reload deletes only this project's data: the OpenSearch index `stories` and the Neo4j nodes labelled Story, StoryVersion,
+StoryTerm and StoryCorpus (the indexes and constraints starting with story_ / term_ are rebuilt). Anything else in either
+database is left alone. Both databases record a fingerprint of the files they were loaded from, so ask_stories.py and
+compare_stories.py can refuse to run against a database that no longer matches the files.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import corpus  # noqa: E402
+import neo4j_stories as ns  # noqa: E402
+import opensearch_stories as os_s  # noqa: E402
+
+INDEX = "stories"
+
+
+# ---------------------------------------------------------------------------
+# What is loaded
+# ---------------------------------------------------------------------------
+def opensearch_state(index: str, disk_hash: str) -> Dict[str, object]:
+    """{"status": 'empty' | 'same' | 'different', "docs": n, "hash": fingerprint it was loaded from}."""
+    state = os_s.index_state(index)
+    if state is None:
+        return {"status": "empty", "docs": 0, "hash": None}
+    loaded = state["meta"].get("corpus_hash")
+    return {"status": "same" if loaded == disk_hash else "different", "docs": state["docs"], "hash": loaded}
+
+
+def neo4j_state(driver, disk_hash: str) -> Dict[str, object]:
+    meta = ns.read_meta(driver)
+    if meta is None:
+        leftovers = ns._run(driver, "MATCH (v:StoryVersion) RETURN count(v) AS n")[0]["n"]     # a graph from before the fingerprint existed
+        return {"status": "different" if leftovers else "empty", "docs": leftovers, "hash": None}
+    return {"status": "same" if meta.get("corpus_hash") == disk_hash else "different", "docs": meta["versions"],
+            "hash": meta.get("corpus_hash"), "scenario": f"targets={meta['targets']}, learn_from={meta['learn_from']}"}
+
+
+def problems(docs: List[Dict], index: str, driver) -> List[str]:
+    """Why a database cannot be searched as the loaded corpus; empty when both hold exactly these files (all versions retrievable)."""
+    disk = corpus.corpus_hash(docs)
+    found = []
+    for name, state in (("OpenSearch", opensearch_state(index, disk)), ("Neo4j", neo4j_state(driver, disk))):
+        if state["status"] == "empty":
+            found.append(f"{name} holds no story data")
+        elif state["status"] == "different":
+            found.append(f"{name} was loaded from different story files (loaded {state['hash'] or 'unknown'}, files {disk})")
+    meta = ns.read_meta(driver)
+    if meta and (meta["targets"], meta["learn_from"]) != ("all", "all"):
+        found.append(f"the Neo4j graph is in the scenario targets={meta['targets']}, learn_from={meta['learn_from']}, not the loaded corpus")
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Changing it
+# ---------------------------------------------------------------------------
+def truncate(index: str, driver) -> Dict[str, int]:
+    """Delete this project's data in both databases; returns what was removed."""
+    state = os_s.index_state(index)
+    removed = {"opensearch_docs": state["docs"] if state else 0,
+               "neo4j_nodes": ns._run(driver, "MATCH (n) WHERE n:Story OR n:StoryVersion OR n:StoryTerm OR n:StoryCorpus RETURN count(n) AS n")[0]["n"]}
+    os_s.drop_index(index)
+    ns.wipe(driver)
+    return removed
+
+
+def load(docs: List[Dict], index: str, driver, embedder, targets=("opensearch", "neo4j")) -> None:
+    meta = {"corpus_hash": corpus.corpus_hash(docs), **{k: v for k, v in corpus.stats(docs).items() if k in ("stories", "versions")}}
+    if "opensearch" in targets:
+        os_s.build_index(index, embedder, docs, meta)
+    if "neo4j" in targets:
+        ns.build_graph(driver, ns.prepare(embedder, docs), "all", "all", embedder, meta)
+
+
+def run(docs: List[Dict], index: str, driver, embedder, reload: bool = False) -> Dict[str, object]:
+    """The whole decision: what to delete and what to load. Raises RuntimeError rather than overwrite a different corpus."""
+    disk = corpus.corpus_hash(docs)
+    result: Dict[str, object] = {"removed": None, "loaded": []}
+    if reload:
+        result["removed"] = truncate(index, driver)
+    states = {"opensearch": opensearch_state(index, disk)["status"], "neo4j": neo4j_state(driver, disk)["status"]}
+    different = [name for name, status in states.items() if status == "different"]
+    if different:
+        raise RuntimeError(f"{' and '.join(different)} already hold a different corpus; run with --reload to replace it")
+    needed = [name for name, status in states.items() if status == "empty"]
+    if needed:
+        load(docs, index, driver, embedder, tuple(needed))
+    result["loaded"] = needed
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Command line
+# ---------------------------------------------------------------------------
+def describe(docs: List[Dict], embedder) -> List[str]:
+    s = corpus.stats(docs)
+    lines = [f"files: {s['stories']} stories, {s['versions']} versions ({s['min_words']}-{s['max_words']} words each, {s['total_words']:,} in all), fingerprint {s['hash']}"]
+    cut = corpus.over_window(docs, embedder)
+    if cut:
+        lines.append(f"WARNING: {len(cut)} version(s) are longer than the embedding model reads ({embedder.max_seq_length} tokens) and would be cut: {', '.join(cut[:5])}")
+    return lines
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--reload", action="store_true", help="delete the story data in both databases first, then load")
+    parser.add_argument("--status", action="store_true", help="show what is loaded and change nothing")
+    parser.add_argument("--stories-dir", default=str(corpus.STORIES_DIR))
+    parser.add_argument("--index", default=INDEX, help="OpenSearch index name")
+    args = parser.parse_args(argv)
+
+    try:
+        docs = corpus.load_corpus(Path(args.stories_dir))
+    except corpus.CorpusError as e:
+        print(f"stories folder problem: {e}")
+        return 2
+    if not os_s.reachable():
+        print(f"OpenSearch not reachable at {os_s.URL} (docker start opensearch-poc)")
+        return 2
+    if not ns.reachable():
+        print(f"Neo4j not reachable at {ns.URI} (docker start neo4j-poc)")
+        return 2
+    embedder = os_s.load_embedder()
+    if embedder is None:
+        print("sentence-transformers is not installed: pip install -r requirements.txt")
+        return 2
+
+    print("\n".join(describe(docs, embedder)))
+    driver = ns.connect()
+    try:
+        disk = corpus.corpus_hash(docs)
+        if args.status:
+            for name, state in (("OpenSearch", opensearch_state(args.index, disk)), ("Neo4j", neo4j_state(driver, disk))):
+                extra = f", {state['scenario']}" if state.get("scenario") else ""
+                print(f"{name:10s} {state['status']:9s} {state['docs']} versions loaded{extra}")
+            return 0
+        try:
+            result = run(docs, args.index, driver, embedder, reload=args.reload)
+        except RuntimeError as e:
+            print(f"not loaded: {e}")
+            return 1
+        if result["removed"]:
+            r = result["removed"]
+            print(f"removed: {r['opensearch_docs']} OpenSearch documents (index {args.index}), {r['neo4j_nodes']} Neo4j nodes")
+        print(f"loaded into: {', '.join(result['loaded'])}" if result["loaded"] else "nothing to do: both databases already hold these files")
+        found = problems(docs, args.index, driver)
+        print("check: both databases hold the same corpus" if not found else "check FAILED:\n  " + "\n  ".join(found))
+        return 0 if not found else 1
+    finally:
+        driver.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,7 @@
+# Everything rag_demo needs (the scripts and pytest), nothing else. Python 3.9+; see README.md
+requests>=2.31.0
+urllib3<2                   # macOS system Python is built on LibreSSL; urllib3 2.x prints a warning on every run
+pytest>=8.0
+sentence-transformers>=5.1  # sentence embeddings (~90 MB model downloads on first use; pulls in torch)
+neo4j>=5.28                 # graph database client
+nltk>=3.9                   # Snowball stemmer for the graph side (no data downloads needed)

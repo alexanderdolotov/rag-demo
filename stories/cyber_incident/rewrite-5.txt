@@ -1,0 +1,5 @@
+Lakemont Logistics expects a security breach that briefly paralysed its operations to cost $15 million to $20 million this quarter, with most of that covered by insurance, the company said Monday.
+
+The trouble started May 6, when attackers gained access to part of the freight company's corporate network. Lakemont shut the affected computers to contain the problem, taking its scheduling and warehouse platforms offline for four days and delaying about 11 percent of shipments. Full service returned May 10.
+
+An outside forensics firm and federal investigators are involved. So far there is no sign that customer card details or employee records were touched, the company said, and its contracts should not be affected. Passwords were reset and monitoring tightened, and the chief executive apologised, promising credits to customers hit by late deliveries.
