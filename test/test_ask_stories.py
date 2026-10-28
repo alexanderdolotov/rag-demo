@@ -14,11 +14,13 @@ pytest.importorskip("neo4j")
 pytest.importorskip("nltk")
 
 import ask_stories as ask  # noqa: E402
+import corpus  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
 
 
-ORIGINALS = {topic: text for topic, version, text in os_s.STORIES if version == "orig"}   # the small in-code stories these tests use
+DOCS = corpus.load_corpus()
+ORIGINALS = corpus.originals(DOCS)
 
 
 def hit(topic, version, score):
@@ -28,7 +30,7 @@ def hit(topic, version, score):
 # --------------------------------------------------------------------------- pure helpers
 def test_single_method_hits_collapse_to_stories_and_show_the_original_text():
     rows = ask.collapse([hit("frog_log", "rw1", 2.0), hit("bread", "orig", 1.0), hit("frog_log", "orig", 0.5)], ORIGINALS)
-    assert [r["topic"] for r in rows] == ["frog_log", "bread"]               # 2.0 x 0.6 beats 1.0
+    assert [r["topic"] for r in rows] == ["frog_log", "bread"]               # its best version (the rewrite, 2.0) beats bread (1.0)
     assert rows[0]["via"] == "rw1" and rows[0]["native"] == 1 and rows[1]["native"] == 2
     assert rows[0]["text"] == ORIGINALS["frog_log"]                       # never the rewrite's wording
 
@@ -199,19 +201,18 @@ class Coin:
 
 
 @pytest.fixture(scope="module")
-def stores():
+def stores(embedder):
     if not os_s.reachable():
         pytest.skip(f"OpenSearch not reachable at {os_s.URL}")
     if not ns.reachable():
         pytest.skip(f"Neo4j not reachable at {ns.URI}")
-    embedder = os_s.load_embedder()
     if embedder is None:
         pytest.skip("sentence-transformers not installed")
     index = "stories_ask_test"
-    os_s.build_index(index, embedder)
+    os_s.build_index(index, embedder, DOCS)
     driver = ns.connect()
     try:
-        yield ask.Stores(index, ns.build_graph(driver, ns.prepare(embedder), "all", "all", embedder), embedder, ORIGINALS)
+        yield ask.Stores(index, ns.build_graph(driver, ns.prepare(embedder, DOCS), "all", "all", embedder), embedder, ORIGINALS)
     finally:
         driver.close()
         os_s.drop_index(index)
@@ -236,6 +237,22 @@ def test_the_plain_run_makes_one_answer_call_per_database_from_that_databases_ow
     assert llm.roles() == [ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM]
     assert sorted(u for _, u in llm.calls) == sorted(ask.answer_prompt(Q, res.rows[n]) for n in res.rows)
     assert set(res.answers) == {"OpenSearch", "Neo4j"} and res.judge == ""
+
+
+def test_a_database_that_returns_nothing_is_not_asked_to_rerank_or_answer(stores):
+    llm = FakeLLM()
+    opts = ask.Options(os_arm="stem", neo_arm="n_ft", rerank=True, judge=True)
+    res = ask.ask("the of and", stores, opts, llm)                       # nothing but stop words: no search term is left
+    assert res.rows == {"OpenSearch": [], "Neo4j": []}
+    assert llm.calls == [] and res.answers == {} and res.reranked == {} and res.judge == ""
+    assert ask.render(res, opts).count("(nothing matched)") == 2
+
+
+def test_the_judge_needs_an_answer_from_both_databases(stores, monkeypatch):
+    monkeypatch.setattr(ask, "search_neo4j", lambda *args, **kwargs: [])
+    llm = FakeLLM()
+    res = ask.ask(Q, stores, ask.Options(judge=True), llm)
+    assert list(res.answers) == ["OpenSearch"] and res.judge == "" and llm.roles() == [ask.ANSWER_SYSTEM]
 
 
 def test_rewrite_changes_what_the_databases_are_searched_with_but_not_the_question_the_llm_answers(stores):
@@ -349,7 +366,7 @@ def test_the_debug_output_names_the_requests_and_stays_readable(stores):
 
 
 def test_each_method_returns_what_the_library_returned_when_all_methods_ran(stores):
-    """The per-method shortcuts must not drift from run_arms / StoryGraph.arms."""
+    """Asking for one method (so that only its requests are sent) must rank exactly like running every method."""
     key = lambda hits: [(h["id"], round(h["score"], 6)) for h in hits]  # noqa: E731
     everything = os_s.run_arms(stores.index, Q, stores.embedder, size=ask.SEARCH_SIZE)
     for arm in ask.OS_ARMS:

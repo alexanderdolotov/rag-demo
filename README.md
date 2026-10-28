@@ -30,41 +30,45 @@ python data_load.py --status    # what each database holds compared with the fil
 
 Both databases store a fingerprint of the files they were loaded from, and `ask_stories.py` / `compare_stories.py` refuse to run when it no
 longer matches (edit a story, then `--reload`). `--reload` deletes only the OpenSearch index `stories` and the Neo4j nodes labelled
-`Story`, `StoryVersion`, `StoryTerm`, `StoryCorpus`; anything else in either database is left alone. A load takes about 15 seconds
+`Story`, `StoryVersion`, `StoryTerm`, `StoryCorpus`; anything else in either database is left alone (`--index` must be one plain index name: a
+wildcard, a comma list or `_all` is refused). An index is stamped with the fingerprint only after its last document is in, and a count
+that does not match the files is reported, so an interrupted load is never mistaken for a finished one. A load takes about 15 seconds
 (embeddings for 120 texts and about 2,200 words). Versions longer than the embedding window (512 tokens) are reported, not silently cut.
 
-Tests, `compare_stories.py` and the toy smoke run each work in their own namespace (other index names; Neo4j labels with a `Test` / `Cmp`
+Tests, `compare_stories.py` and the smoke run each work in their own namespace (other index names; Neo4j labels with a `Test` / `Cmp`
 prefix), so none of them touches the loaded corpus. `neo4j_stories.PREFIX` does that; an unprefixed delete-everything bug would still hit
 all of Neo4j, because the community edition has one database only.
 
-## The small in-code test corpus (OpenSearch tests and smoke run)
+## OpenSearch methods (smoke run and tests)
 
-The unit tests and `story_smoke.py` use a tiny, fast, in-code corpus (`STORIES` in `opensearch_stories.py`: 24 one-sentence texts) of frog / stock / tariff stories, each with LLM-style rewrites in different words and traps
-(polysemy, negation, unrelated stories), loaded into a local OpenSearch to compare ways of finding the same concept
-when the words differ. See the docstring of `opensearch_stories.py` for the methods compared.
+The OpenSearch tests and `story_smoke.py` run on the same `stories/` corpus and the first query set from `stories/queries.json`, loaded into
+their own scratch indexes, to compare ways of finding the same concept when the words differ (the stories have LLM-style rewrites in
+different words and traps: polysemy, negation, unrelated stories). See the docstring of `opensearch_stories.py` for the methods compared.
 
 ```bash
-python story_smoke.py                     # (re)loads the small `stories_toy` index (not the loaded corpus) and prints every query and a scoreboard
+python story_smoke.py                     # (re)loads a scratch `stories_smoke` index (not the loaded corpus) and prints every query and a scoreboard
 python story_smoke.py --no-vectors        # keyword arms only
 pytest test/test_opensearch_stories.py -v  # skips itself if OpenSearch is down; uses and removes a `stories_test` index
 ```
 
 | File | Purpose |
 |---|---|
-| `opensearch_stories.py` | stories, queries, synonym list, index mapping/analyzers, loaders, search arms, rank fusion, scoring |
+| `opensearch_stories.py` | synonym list, index mapping/analyzers, loaders, search arms, rank fusion, scoring |
 | `story_smoke.py` | command-line run: load, search, scoreboard |
 | `test/test_opensearch_stories.py` | the findings as assertions (analyzer behaviour, vocabulary gap, synonyms, rewrites, polysemy, vectors) |
 
-Caveats: 24 one-sentence documents and 8 queries is a toy; the synonym list was written knowing the queries, so the keyword-with-synonyms
+Caveats: 20 invented stories and 28 queries is a toy; the synonym list was written knowing the first queries, so the keyword-with-synonyms
 numbers are optimistic. Treat results as a way to see how each method behaves, not as accuracy figures.
 
 
 ## Neo4j (graph database) and its methods
 
 The corpus goes into Neo4j as a graph (versions, terms, and word links learned from the rewrites) and is searched with the same kinds of
-methods as OpenSearch. Query sets, defined in `opensearch_stories.py`: set 1 = the 8 first queries, set 2 = 11 harder ones (`HELDOUT`: words
-missing from the corpus, wrong-polarity and wrong-sense distractors), set 3 = 9 about the stories that exist only on disk (`NEW`).
-`neo4j_stories.py` has the graph model and the arms (`n_ft`, `n_vec`, `n_co`, `n_term`, `n_hyb`, `n_story`).
+methods as OpenSearch. Query sets, in `stories/queries.json`: set 1 = the 8 first queries, set 2 = 11 harder ones (less overlap in wording,
+wrong-polarity and wrong-sense distractors), set 3 = 9 about the stories added after the first eleven.
+`neo4j_stories.py` has the graph model and the arms (`n_ft`, `n_vec`, `n_co`, `n_term`, `n_hyb`, `n_story`). Text analysis: OpenSearch's
+`stem` / `syn` arms and Neo4j's `n_ft` both use Lucene's English analysis (possessives dropped, Porter stemmer); the graph arms (`n_co`,
+`n_term`) use their own tokenizer with NLTK's Snowball stemmer, so a few stems differ (`wednesday` / `wednesdai`).
 
 ```bash
 # one-off: a throwaway local Neo4j (no auth, bound to localhost only - do not put real data in it)
@@ -74,7 +78,7 @@ docker start opensearch-poc neo4j-poc          # on later days
 
 python compare_stories.py                 # rank table per scenario on the loaded corpus (see "Comparison table")
 python compare_stories.py --explain       # also shows which terms the graph added to each query
-pytest test/test_neo4j_stories.py -v      # skips itself if either service is down; small in-code corpus, `Test`-prefixed graph
+pytest test/test_neo4j_stories.py -v      # skips itself if either service is down; runs on `stories/` in a `Test`-prefixed graph
 ```
 
 Env `NEO4J_URI` (default `bolt://localhost:7687`) and optionally `NEO4J_USER` / `NEO4J_PASSWORD`. Only nodes labelled
@@ -112,14 +116,15 @@ python ask_stories.py --debug              # print the exact requests sent to ea
 keyword methods, how the index analyses your words (stop words dropped, stemmed, synonyms added). Default OpenRouter model:
 `anthropic/claude-haiku-5.5` (change with `--model`; the older `claude-3.5-haiku` is no longer served).
 
-Versions are collapsed to one row per story with the best version's score (rewrites count 0.6 of an original), and the text shown and sent to
-the LLM is the story's original, so near-ties can flip because of that weighting: the `via` column shows which version matched. Scores are each
+Versions are collapsed to one row per story with the best version's score as it is (a tie goes to the original), and the text shown and sent to
+the LLM is the story's original: the `via` column shows which version matched. (An earlier x0.6 discount on rewrites is gone: on fused scores,
+which differ by about 1% from one rank to the next, it pushed a top-ranked rewrite below originals far down the list.) Scores are each
 engine's own, not comparable across databases. Times include embedding the query; Neo4j's merged method makes several round trips.
 
 ## Comparison table
 
 `compare_stories.py` runs three scenarios (originals only; rewrites used only as a thesaurus for the graph; originals and rewrites all
-retrievable) over three query sets (set 1 = 8 first queries, set 2 = 11 harder ones, set 3 = 9 about the stories that exist only on disk) and
+retrievable) over three query sets (set 1 = 8 first queries, set 2 = 11 harder ones, set 3 = 9 about the stories added after the first eleven; all in `stories/queries.json`) and
 prints the rank of the first correct story per query plus hit@3 and mean reciprocal rank per set. It reads the loaded OpenSearch index; the
 Neo4j scenario graphs are built under their own `Cmp` prefix and deleted afterwards. `--explain` adds the words the graph appended to each query.
 
@@ -127,11 +132,12 @@ Neo4j scenario graphs are built under their own `Cmp` prefix and deleted afterwa
 
 | File | Purpose |
 |---|---|
-| `stories/` | the corpus (20 stories x 6 files) and its README |
-| `corpus.py` | reads and validates `stories/`, fingerprints it |
+| `stories/` | the corpus (20 stories x 6 files), the test queries (`queries.json`) and its README |
+| `corpus.py` | reads and validates `stories/` and its queries, fingerprints the corpus |
 | `data_load.py` | loads both databases from the files (`--reload`, `--status`) |
 | `ask_stories.py` | the interactive two-database script (LLM client, optional steps, `--debug`) |
 | `compare_stories.py` | the comparison table |
 | `opensearch_stories.py`, `neo4j_stories.py` | index / graph building and every search method, per database |
-| `story_smoke.py` | quick demo on the small in-code corpus |
-| `test/` | `test_corpus.py`, `test_data_load.py`, `test_ask_stories.py`, `test_opensearch_stories.py`, `test_neo4j_stories.py` |
+| `retrieval.py` | what the two share: embedding model, rank fusion, versions to stories, picking arms, hit@3 / MRR |
+| `story_smoke.py` | quick demo on a scratch index of the corpus |
+| `test/` | `test_corpus.py`, `test_retrieval.py`, `test_data_load.py`, `test_ask_stories.py`, `test_opensearch_stories.py`, `test_neo4j_stories.py` |

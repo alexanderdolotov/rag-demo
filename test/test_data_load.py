@@ -27,15 +27,14 @@ STORIES = {
 
 
 @pytest.fixture(scope="module")
-def embedder():
+def embedder(embedder):          # the shared model (conftest.py), and this module needs both services as well
     if not os_s.reachable():
         pytest.skip(f"OpenSearch not reachable at {os_s.URL}")
     if not ns.reachable():
         pytest.skip(f"Neo4j not reachable at {ns.URI}")
-    model = os_s.load_embedder()
-    if model is None:
+    if embedder is None:
         pytest.skip("sentence-transformers not installed")
-    return model
+    return embedder
 
 
 @pytest.fixture
@@ -103,6 +102,44 @@ def test_a_changed_file_is_refused_until_reload_is_asked_for(driver, embedder, s
     result = data_load.run(changed, INDEX, driver, embedder, reload=True)
     assert result["removed"] == {"opensearch_docs": 9, "neo4j_nodes": nodes} and nodes > 9
     assert data_load.problems(changed, INDEX, driver) == []
+
+
+def test_an_index_whose_load_stopped_half_way_is_reloaded_and_never_trusted(driver, embedder, story_dir, monkeypatch):
+    docs = docs_of(story_dir)
+    real_call = os_s.call
+
+    def dies_on_bulk(method, path, body=None, ndjson=None):
+        if path.startswith("/_bulk"):
+            raise RuntimeError("the load stopped")
+        return real_call(method, path, body, ndjson)
+    monkeypatch.setattr(os_s, "call", dies_on_bulk)
+    with pytest.raises(RuntimeError, match="stopped"):
+        data_load.run(docs, INDEX, driver, embedder)
+    monkeypatch.undo()
+    assert data_load.opensearch_state(INDEX, corpus.corpus_hash(docs), len(docs))["status"] == "different"     # was "same" with 0 documents
+    assert any("without a fingerprint" in p for p in data_load.problems(docs, INDEX, driver))
+    with pytest.raises(RuntimeError, match="opensearch"):
+        data_load.run(docs, INDEX, driver, embedder)                              # refuses instead of reporting "nothing to do"
+    data_load.run(docs, INDEX, driver, embedder, reload=True)
+    assert data_load.problems(docs, INDEX, driver) == []
+
+
+def test_documents_missing_from_a_fingerprinted_index_are_reported(driver, embedder, story_dir):
+    docs = docs_of(story_dir)
+    data_load.run(docs, INDEX, driver, embedder)
+    os_s.call("POST", f"/{INDEX}/_delete_by_query?refresh=true", {"query": {"ids": {"values": ["frogs:orig"]}}})
+    assert data_load.opensearch_state(INDEX, corpus.corpus_hash(docs), len(docs))["status"] == "incomplete"
+    assert any("holds 8 documents but the files have 9 versions" in p for p in data_load.problems(docs, INDEX, driver))
+    with pytest.raises(RuntimeError, match="incomplete"):
+        data_load.run(docs, INDEX, driver, embedder)
+    data_load.run(docs, INDEX, driver, embedder, reload=True)
+    assert data_load.problems(docs, INDEX, driver) == []
+
+
+def test_an_index_name_that_could_match_several_indices_stops_the_command_line(story_dir, capsys):
+    with pytest.raises(SystemExit):
+        data_load.main(["--stories-dir", str(story_dir), "--index", "*", "--reload"])
+    assert "index_name" in capsys.readouterr().err
 
 
 def test_only_the_missing_database_is_loaded(driver, embedder, story_dir):

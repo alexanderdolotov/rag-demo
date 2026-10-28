@@ -1,7 +1,8 @@
 """
-Graph-database side of the story experiments (see opensearch_stories.py for the corpus and the search-engine arms).
+Graph-database side of the story experiments (see corpus.py for the corpus, opensearch_stories.py for the search-engine arms and
+retrieval.py for what the two share).
 
-The same 24 story texts go into Neo4j as a small graph:
+The same story texts go into Neo4j as a small graph:
 
     (:StoryVersion {id, topic, version, kind, text, embedding})-[:OF]->(:Story {id})
     (:StoryVersion)-[:HAS {tf}]->(:StoryTerm {stem, idf, embedding})
@@ -42,7 +43,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from neo4j import GraphDatabase
 from nltk.stem.snowball import SnowballStemmer
 
-import opensearch_stories as os_s
+from retrieval import embed, rrf, run_selected, story_level
 
 # the driver reports every statement that mentions a label the database does not have yet (normal before the first load)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
@@ -50,7 +51,7 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
 AUTH = (os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"]) if os.environ.get("NEO4J_PASSWORD") else None
 
-# Fixed before looking at any result; the HELDOUT queries were never used to pick them.
+# Fixed before looking at any result; the set 2 queries (stories/queries.json) were never used to pick them.
 MIN_NPMI = 0.6       # CO edges weaker than this are not used for expansion
 ALPHA = 0.5          # the expansion terms together weigh at most ALPHA x the original query terms
 TERM_K = 3           # nearest vocabulary terms per query word (n_term)
@@ -64,9 +65,15 @@ STOP = frozenset("a an and are as at be but by for if in into is it no not of on
 _STEMMER = SnowballStemmer("english")
 
 
+# a word as Lucene's standard tokenizer sees it: letters and digits of any alphabet, an apostrophe allowed inside ("don't")
+_WORD = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*")
+_POSSESSIVE = re.compile(r"['\u2019]s$")
+
+
 def tokens(text: str) -> List[Tuple[str, str]]:
-    """[(stem, surface word)] without stop words."""
-    return [(_STEMMER.stem(w), w) for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOP]
+    """[(stem, surface word)] without stop words. "watchman's" is "watchman" and "naïve" stays whole, as in Lucene's English analyzer."""
+    words = (_POSSESSIVE.sub("", w) for w in _WORD.findall(text.lower()))
+    return [(_STEMMER.stem(w), w) for w in words if w not in STOP]
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +86,9 @@ class Prepared:
     has_vectors: bool
 
 
-def prepare(embedder=None, docs: Optional[List[dict]] = None) -> Prepared:
-    """Tokens and vectors for `docs` (default: the small in-code test stories). The dicts given are copied, not changed."""
-    docs = [dict(d) for d in (os_s.make_docs() if docs is None else docs)]
+def prepare(embedder, docs: List[dict]) -> Prepared:
+    """Tokens and vectors for `docs` (from corpus.load_corpus; `embedder` may be None for keyword arms only). The dicts given are copied, not changed."""
+    docs = [dict(d) for d in docs]
     surfaces: Dict[str, Counter] = defaultdict(Counter)
     for d in docs:
         toks = tokens(d["text"])
@@ -93,10 +100,10 @@ def prepare(embedder=None, docs: Optional[List[dict]] = None) -> Prepared:
     for d in docs:
         d["vec"] = None
     if embedder:
-        for d, v in zip(docs, os_s.embed(embedder, [d["text"] for d in docs])):
+        for d, v in zip(docs, embed(embedder, [d["text"] for d in docs])):
             d["vec"] = v
         stems = sorted(vocab)
-        for stem, v in zip(stems, os_s.embed(embedder, [vocab[s]["surface"] for s in stems])):
+        for stem, v in zip(stems, embed(embedder, [vocab[s]["surface"] for s in stems])):
             vocab[stem]["vec"] = v
     return Prepared(docs, vocab, embedder is not None)
 
@@ -310,7 +317,7 @@ class StoryGraph:
         if not words:
             return []
         out: Dict[str, dict] = {}
-        for word, vec in zip(words, os_s.embed(self.embedder, words)):
+        for word, vec in zip(words, embed(self.embedder, words)):
             rows = _run(self.driver, "MATCH (t:StoryTerm) SEARCH t IN (VECTOR INDEX term_vec FOR $vec LIMIT $k) SCORE AS score "
                                      "RETURN t.stem AS stem, t.surface AS word, score AS strength", {"k": TERM_K, "vec": vec})
             for r in rows:
@@ -320,7 +327,7 @@ class StoryGraph:
 
     # --- arms ------------------------------------------------------------------
     def ft(self, text: str, size: int = 10) -> List[Dict]:
-        query = " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+        query = " ".join(word for _, word in tokens(text))   # plain words only: nothing that Lucene's query syntax would read as an operator
         if not query:
             return []
         return _run(self.driver, f"MATCH (node:StoryVersion) SEARCH node IN (FULLTEXT INDEX story_ft FOR $q LIMIT $k) SCORE AS score RETURN {_COLUMNS}",
@@ -328,7 +335,7 @@ class StoryGraph:
 
     def vec(self, text: str, size: int = 10) -> List[Dict]:
         return _run(self.driver, f"MATCH (node:StoryVersion) SEARCH node IN (VECTOR INDEX story_vec FOR $vec LIMIT $k) SCORE AS score RETURN {_COLUMNS}",
-                    {"k": size, "vec": os_s.embed(self.embedder, [text])[0]})
+                    {"k": size, "vec": embed(self.embedder, [text])[0]})
 
     def co(self, text: str, size: int = 10) -> List[Dict]:
         stems = self.query_stems(text)
@@ -341,14 +348,15 @@ class StoryGraph:
         extra = {r["stem"]: r["strength"] for r in self.term_expansion(text)}
         return self._bm25(self._expanded(base, extra) if extra and base else (extra or base), size)
 
-    def arms(self, text: str, size: int = 10) -> Dict[str, List[Dict]]:
-        arms = {"n_ft": self.ft(text, size), "n_co": self.co(text, size)}
+    def arms(self, text: str, size: int = 10, only: Optional[Sequence[str]] = None) -> Dict[str, List[Dict]]:
+        """What each search arm returns for `text` (every arm this graph allows, or just those named in `only`; see retrieval.run_selected)."""
+        builders: Dict[str, Callable] = {"n_ft": lambda get: self.ft(text, size), "n_co": lambda get: self.co(text, size)}
         if self.prep.has_vectors:
-            arms["n_vec"] = self.vec(text, size)
-            arms["n_term"] = self.term(text, size)
-            arms["n_hyb"] = os_s.rrf([arms["n_co"], arms["n_term"], arms["n_vec"]])
+            builders["n_vec"] = lambda get: self.vec(text, size)
+            builders["n_term"] = lambda get: self.term(text, size)
+            builders["n_hyb"] = lambda get: rrf([get("n_co"), get("n_term"), get("n_vec")])
         else:
-            arms["n_hyb"] = os_s.rrf([arms["n_co"]])
+            builders["n_hyb"] = lambda get: rrf([get("n_co")])
         if self.targets == "all":
-            arms["n_story"] = os_s.story_level(arms["n_hyb"])
-        return arms
+            builders["n_story"] = lambda get: story_level(get("n_hyb"))
+        return run_selected(builders, only)

@@ -1,6 +1,6 @@
 # Story corpus
 
-The single source both databases are loaded from (`python data_load.py`). 20 stories, each in its own folder:
+The single source both databases are loaded from (`python data_load.py`), and the queries used to score them. 20 stories, each in its own folder:
 
 ```
 stories/<story_id>/original.txt        the original - this file name is what marks it as the original
@@ -10,6 +10,20 @@ stories/<story_id>/rewrite-1.txt       five rewrites of it, in different words .
 Plain UTF-8 text, paragraphs separated by blank lines. The folder name is the story id (lowercase letters, digits, underscore).
 `corpus.py` refuses any other file name, an empty file, a missing original or no rewrites. Editing a file changes the corpus
 fingerprint, so `ask_stories.py` / `compare_stories.py` will tell you to run `data_load.py --reload`.
+
+## The test queries
+
+`queries.json` holds the questions the retrieval methods are scored on, in named sets, and which story answers each:
+
+```json
+{"sets": [{"name": "set 1", "description": "...", "queries": [{"id": "q1", "text": "frog jump", "expect": ["frog_log"]}]}]}
+```
+
+`expect` lists the story ids that count as a correct answer (the rank of the first one found is what gets scored). Query ids are unique
+across sets. `corpus.load_queries()` refuses a malformed file and a query that expects a story that does not exist, so a typo cannot silently
+score as "not found". A loose file next to the story folders is not mistaken for a story. Set 1 = 8 first queries, set 2 = 11 harder ones,
+set 3 = 9 about the nine stories added after the first eleven (cyber_incident, ceo_departure, supply_chain, guidance_cut, litigation,
+regional_bank, job_duties, village_customs, buyback).
 
 ## The five rewrites (same facts, different words)
 

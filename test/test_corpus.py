@@ -2,12 +2,12 @@
 The story files on disk: the loader's rules (tiny corpora built in a temp folder) and checks on the real stories corpus, so a
 careless edit to a story file is caught before it silently changes what both databases hold. No services needed.
 """
+import json
 import re
 
 import pytest
 
 import corpus
-import opensearch_stories as os_s
 
 STORIES = corpus.STORIES_DIR
 
@@ -23,6 +23,15 @@ def make(root, **stories):
 
 def words(text):
     return set(re.findall(r"[a-z]+", text.lower()))
+
+
+def queries_file(root, sets):
+    (root / corpus.QUERIES_FILE).write_text(json.dumps({"sets": sets}))
+    return root
+
+
+def a_set(name="set 1", queries=None):
+    return {"name": name, "description": "d", "queries": queries or [{"id": "q1", "text": "frog", "expect": ["frog"]}]}
 
 
 # --------------------------------------------------------------------------- the rules
@@ -49,6 +58,13 @@ def test_stories_come_back_in_a_stable_order(tmp_path):
 def test_a_story_folder_that_breaks_the_layout_is_refused_with_a_reason(tmp_path, files, message):
     make(tmp_path, frog=files)
     with pytest.raises(corpus.CorpusError, match=message):
+        corpus.load_corpus(tmp_path)
+
+
+def test_two_files_for_the_same_rewrite_number_are_refused(tmp_path):
+    """rewrite-1.txt and rewrite-01.txt would both become version rw1: one document silently overwriting the other, or a crash half way through a load."""
+    make(tmp_path, frog={"original.txt": "x", "rewrite-1.txt": "y", "rewrite-01.txt": "z"})
+    with pytest.raises(corpus.CorpusError, match="rewrite-01.txt and rewrite-1.txt are both rewrite 1"):
         corpus.load_corpus(tmp_path)
 
 
@@ -90,6 +106,54 @@ def test_versions_longer_than_the_embedding_window_are_reported():
     assert corpus.over_window(docs, Model()) == ["a:rw1"] and corpus.over_window(docs, None) is None
 
 
+# --------------------------------------------------------------------------- the test queries
+def test_query_sets_come_back_in_file_order_as_id_text_expected_stories(tmp_path):
+    queries_file(tmp_path, [a_set("b", [{"id": "q2", "text": "toad", "expect": ["frog", "pond"]}]), a_set("a")])
+    sets = corpus.load_queries(tmp_path)
+    assert [s.name for s in sets] == ["b", "a"] and sets[0].description == "d"
+    assert sets[0].queries == [("q2", "toad", ("frog", "pond"))] and sets[1].queries == [("q1", "frog", ("frog",))]
+
+
+@pytest.mark.parametrize("content, message", [
+    ("not json", "not valid JSON"),
+    ('{"sets": []}', "at least one set"),
+    ("[]", "at least one set"),
+    ('{"sets": [{"description": "d", "queries": [{"id": "q", "text": "t", "expect": ["a"]}]}]}', 'needs a "name"'),
+    ('{"sets": [{"name": "s", "queries": [{"id": "q", "text": "t", "expect": ["a"]}]}]}', 'needs a "description"'),
+    ('{"sets": [{"name": "s", "description": "d", "queries": []}]}', "non-empty"),
+    ('{"sets": [{"name": "s", "description": "d", "queries": [{"id": "q", "text": "t", "expect": []}]}]}', "non-empty .expect. list"),
+    ('{"sets": [{"name": "s", "description": "d", "queries": [{"id": "q", "text": " ", "expect": ["a"]}]}]}', 'string "text"'),
+    ('{"sets": [{"name": "s", "description": "d", "queries": [{"id": "q", "text": "t", "expect": "a"}]}]}', "non-empty .expect. list"),
+])
+def test_a_queries_file_that_breaks_the_layout_is_refused_with_a_reason(tmp_path, content, message):
+    (tmp_path / corpus.QUERIES_FILE).write_text(content)
+    with pytest.raises(corpus.CorpusError, match=message):
+        corpus.load_queries(tmp_path)
+
+
+def test_a_missing_file_and_a_reused_query_id_are_refused(tmp_path):
+    with pytest.raises(corpus.CorpusError, match="does not exist"):
+        corpus.load_queries(tmp_path)
+    queries_file(tmp_path, [a_set("one"), a_set("two")])              # both sets use the id q1
+    with pytest.raises(corpus.CorpusError, match="'q1' is used twice"):
+        corpus.load_queries(tmp_path)
+
+
+def test_with_the_corpus_given_a_query_for_a_story_that_does_not_exist_is_refused(tmp_path):
+    make(tmp_path, frog={"original.txt": "x", "rewrite-1.txt": "y"})
+    queries_file(tmp_path, [a_set(queries=[{"id": "q1", "text": "frog", "expect": ["frog", "toad_log"]}])])
+    docs = corpus.load_corpus(tmp_path)
+    assert corpus.load_queries(tmp_path)[0].queries[0][2] == ("frog", "toad_log")      # without docs the ids are not checked
+    with pytest.raises(corpus.CorpusError, match=r"toad_log.*not stories"):
+        corpus.load_queries(tmp_path, docs)
+
+
+def test_a_queries_file_next_to_the_stories_is_not_mistaken_for_a_story(tmp_path):
+    make(tmp_path, frog={"original.txt": "x", "rewrite-1.txt": "y"})
+    queries_file(tmp_path, [a_set()])
+    assert [d["topic"] for d in corpus.load_corpus(tmp_path)] == ["frog", "frog"]
+
+
 # --------------------------------------------------------------------------- the real stories
 @pytest.fixture(scope="module")
 def docs():
@@ -123,10 +187,9 @@ def test_every_rewrite_really_is_in_different_words(docs):
             assert len(a & b) / len(a | b) < 0.8, d["id"]
 
 
-def test_every_story_the_queries_expect_exists(docs):
-    topics = {d["topic"] for d in docs}
-    expected = {t for _, _, expect in os_s.QUERIES + os_s.HELDOUT + os_s.NEW for t in expect}
-    assert expected <= topics, expected - topics
+def test_the_real_queries_load_and_every_story_they_expect_exists(docs):
+    sets = corpus.load_queries(STORIES, docs)                  # raises if a query expects a story that is not there
+    assert sets and all(s.queries for s in sets)
 
 
 GAP_WORDS = {   # words the rewrites use and the original deliberately does not: they are what makes the experiment a vocabulary-gap test

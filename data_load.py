@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import corpus  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
+import retrieval  # noqa: E402
 
 INDEX = "stories"
 
@@ -29,13 +30,18 @@ INDEX = "stories"
 # ---------------------------------------------------------------------------
 # What is loaded
 # ---------------------------------------------------------------------------
-def opensearch_state(index: str, disk_hash: str) -> Dict[str, object]:
-    """{"status": 'empty' | 'same' | 'different', "docs": n, "hash": fingerprint it was loaded from}."""
+def opensearch_state(index: str, disk_hash: str, versions: Optional[int] = None) -> Dict[str, object]:
+    """{"status": 'empty' | 'same' | 'incomplete' | 'different', "docs": n, "hash": fingerprint it was loaded from}.
+    'incomplete': the fingerprint matches but, given the number of `versions` in the files, documents are missing."""
     state = os_s.index_state(index)
     if state is None:
         return {"status": "empty", "docs": 0, "hash": None}
     loaded = state["meta"].get("corpus_hash")
-    return {"status": "same" if loaded == disk_hash else "different", "docs": state["docs"], "hash": loaded}
+    if loaded != disk_hash:
+        status = "different"
+    else:
+        status = "incomplete" if versions is not None and state["docs"] != versions else "same"
+    return {"status": status, "docs": state["docs"], "hash": loaded}
 
 
 def neo4j_state(driver, disk_hash: str) -> Dict[str, object]:
@@ -51,11 +57,15 @@ def problems(docs: List[Dict], index: str, driver) -> List[str]:
     """Why a database cannot be searched as the loaded corpus; empty when both hold exactly these files (all versions retrievable)."""
     disk = corpus.corpus_hash(docs)
     found = []
-    for name, state in (("OpenSearch", opensearch_state(index, disk)), ("Neo4j", neo4j_state(driver, disk))):
+    for name, state in (("OpenSearch", opensearch_state(index, disk, len(docs))), ("Neo4j", neo4j_state(driver, disk))):
         if state["status"] == "empty":
             found.append(f"{name} holds no story data")
+        elif state["status"] == "incomplete":
+            found.append(f"{name} holds {state['docs']} documents but the files have {len(docs)} versions (an interrupted load, or documents removed since)")
+        elif state["hash"] is None:
+            found.append(f"{name} holds story data without a fingerprint (an interrupted load, or not made by data_load.py)")
         elif state["status"] == "different":
-            found.append(f"{name} was loaded from different story files (loaded {state['hash'] or 'unknown'}, files {disk})")
+            found.append(f"{name} was loaded from different story files (loaded {state['hash']}, files {disk})")
     meta = ns.read_meta(driver)
     if meta and (meta["targets"], meta["learn_from"]) != ("all", "all"):
         found.append(f"the Neo4j graph is in the scenario targets={meta['targets']}, learn_from={meta['learn_from']}, not the loaded corpus")
@@ -89,10 +99,10 @@ def run(docs: List[Dict], index: str, driver, embedder, reload: bool = False) ->
     result: Dict[str, object] = {"removed": None, "loaded": []}
     if reload:
         result["removed"] = truncate(index, driver)
-    states = {"opensearch": opensearch_state(index, disk)["status"], "neo4j": neo4j_state(driver, disk)["status"]}
-    different = [name for name, status in states.items() if status == "different"]
+    states = {"opensearch": opensearch_state(index, disk, len(docs))["status"], "neo4j": neo4j_state(driver, disk)["status"]}
+    different = [name for name, status in states.items() if status in ("different", "incomplete")]
     if different:
-        raise RuntimeError(f"{' and '.join(different)} already hold a different corpus; run with --reload to replace it")
+        raise RuntimeError(f"{' and '.join(different)} already hold a different corpus or an incomplete one; run with --reload to replace it")
     needed = [name for name, status in states.items() if status == "empty"]
     if needed:
         load(docs, index, driver, embedder, tuple(needed))
@@ -117,7 +127,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--reload", action="store_true", help="delete the story data in both databases first, then load")
     parser.add_argument("--status", action="store_true", help="show what is loaded and change nothing")
     parser.add_argument("--stories-dir", default=str(corpus.STORIES_DIR))
-    parser.add_argument("--index", default=INDEX, help="OpenSearch index name")
+    parser.add_argument("--index", type=os_s.index_name, default=INDEX, help="OpenSearch index name")
     args = parser.parse_args(argv)
 
     try:
@@ -131,7 +141,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not ns.reachable():
         print(f"Neo4j not reachable at {ns.URI} (docker start neo4j-poc)")
         return 2
-    embedder = os_s.load_embedder()
+    embedder = retrieval.load_embedder()
     if embedder is None:
         print("sentence-transformers is not installed: pip install -r requirements.txt")
         return 2
@@ -141,7 +151,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         disk = corpus.corpus_hash(docs)
         if args.status:
-            for name, state in (("OpenSearch", opensearch_state(args.index, disk)), ("Neo4j", neo4j_state(driver, disk))):
+            for name, state in (("OpenSearch", opensearch_state(args.index, disk, len(docs))), ("Neo4j", neo4j_state(driver, disk))):
                 extra = f", {state['scenario']}" if state.get("scenario") else ""
                 print(f"{name:10s} {state['status']:9s} {state['docs']} versions loaded{extra}")
             return 0

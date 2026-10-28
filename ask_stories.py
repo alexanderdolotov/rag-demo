@@ -39,6 +39,7 @@ import corpus  # noqa: E402
 import data_load  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
+import retrieval  # noqa: E402
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODELS = {"openrouter": "anthropic/claude-haiku-5.5", "ollama": "qwen3:8b"}
@@ -116,8 +117,8 @@ def failed(reply: str) -> bool:
 # Pure helpers (no services)
 # ---------------------------------------------------------------------------
 def collapse(hits: Sequence[Dict], originals: Dict[str, str], pool: int = POOL) -> List[Dict]:
-    """Versions -> one row per story (best version, rewrites weighted below originals), best first; `text` is the story's original."""
-    rows = os_s.story_level(hits)[:pool]
+    """Versions -> one row per story (its best version's score as it is, see retrieval.story_level), best first; `text` is the story's original."""
+    rows = retrieval.story_level(hits)[:pool]
     return [dict(r, text=originals[r["topic"]], native=i) for i, r in enumerate(rows, start=1)]
 
 
@@ -172,20 +173,12 @@ def judge_prompt(question: str, blocks: Sequence[Tuple[Sequence[Dict], str]]) ->
 # What each database is asked (only the searches the chosen method needs)
 # ---------------------------------------------------------------------------
 def search_opensearch(stores: "Stores", query: str, arm: str, size: int = SEARCH_SIZE) -> List[Dict]:
-    keywords = lambda field: os_s.bm25(stores.index, field, query, size)  # noqa: E731
-    vectors = lambda: os_s.knn(stores.index, os_s.embed(stores.embedder, [query])[0], size)  # noqa: E731
-    if arm in ("plain", "stem", "syn"):
-        return keywords({"plain": "text", "stem": "text.stem", "syn": "text.syn"}[arm])
-    if arm == "dense":
-        return vectors()
-    return os_s.rrf([keywords("text.syn"), vectors()])                     # hybrid
+    """Only the requests this one method needs (the other arms are not run)."""
+    return os_s.run_arms(stores.index, query, stores.embedder, size=size, only=[arm])[arm]
 
 
 def search_neo4j(stores: "Stores", query: str, arm: str, size: int = SEARCH_SIZE) -> List[Dict]:
-    graph = stores.graph
-    if arm in ("n_ft", "n_vec", "n_co", "n_term"):
-        return {"n_ft": graph.ft, "n_vec": graph.vec, "n_co": graph.co, "n_term": graph.term}[arm](query, size)
-    return os_s.rrf([graph.co(query, size), graph.term(query, size), graph.vec(query, size)])   # n_hyb
+    return stores.graph.arms(query, size, only=[arm])[arm]
 
 
 @contextmanager
@@ -305,17 +298,17 @@ def ask(question: str, stores: Stores, opts: Options, llm: Optional[LLM] = None,
 
     if opts.rerank and llm:
         with ThreadPoolExecutor(2) as ex:
-            futures = {name: ex.submit(rerank, question, rows, llm) for name, rows in pool.items()}
+            futures = {name: ex.submit(rerank, question, rows, llm) for name, rows in pool.items() if rows}
         for name, future in futures.items():
             pool[name], res.reranked[name] = future.result()
     res.rows = {name: rows[:opts.top] for name, rows in pool.items()}
 
     if llm:
-        with ThreadPoolExecutor(2) as ex:
-            futures = {name: ex.submit(_timed, llm, ANSWER_SYSTEM, answer_prompt(question, rows)) for name, rows in res.rows.items()}
+        with ThreadPoolExecutor(2) as ex:   # a database that returned nothing gives the LLM nothing to answer from, so it is not asked
+            futures = {name: ex.submit(_timed, llm, ANSWER_SYSTEM, answer_prompt(question, rows)) for name, rows in res.rows.items() if rows}
         for name, future in futures.items():
             (res.answers[name], res.answer_s[name]) = future.result()
-        if opts.judge and not any(failed(a) for a in res.answers.values()):
+        if opts.judge and len(res.answers) == len(res.rows) and not any(failed(a) for a in res.answers.values()):
             res.judge_order = ("OpenSearch", "Neo4j") if rng.random() < 0.5 else ("Neo4j", "OpenSearch")   # the order must not always be the same
             res.judge = llm(JUDGE_SYSTEM, judge_prompt(question, [(res.rows[n], res.answers[n]) for n in res.judge_order]))
     return res
@@ -392,7 +385,7 @@ def main() -> None:
         sys.exit(f"OpenSearch not reachable at {os_s.URL} (docker start opensearch-poc)")
     if not ns.reachable():
         sys.exit(f"Neo4j not reachable at {ns.URI} (docker start neo4j-poc)")
-    embedder = os_s.load_embedder()
+    embedder = retrieval.load_embedder()
     if embedder is None:
         sys.exit("sentence-transformers is not installed: pip install -r requirements.txt")
 

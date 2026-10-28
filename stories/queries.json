@@ -1,0 +1,50 @@
+{
+  "sets": [
+    {
+      "name": "set 1",
+      "description": "The first eight queries: the frog, stock, bank and tariff stories, asked directly and in other words.",
+      "queries": [
+        {"id": "q1", "text": "frog jump", "expect": ["frog_log"]},
+        {"id": "q2", "text": "amphibian leaping onto wood", "expect": ["frog_log"]},
+        {"id": "q3", "text": "the toad hopped by a tree trunk", "expect": ["frog_log"]},
+        {"id": "q4", "text": "frog refused to jump", "expect": ["frog_still"]},
+        {"id": "q5", "text": "prices jumped after earnings", "expect": ["stock_jump"]},
+        {"id": "q6", "text": "central bank raises interest rates", "expect": ["bank_rates"]},
+        {"id": "q7", "text": "Is the company being hurt by import duties?", "expect": ["tariff_margin", "tariff_hurt"]},
+        {"id": "q8", "text": "customs levies refunded", "expect": ["tariff_margin"]}
+      ]
+    },
+    {
+      "name": "set 2",
+      "description": "Eleven harder queries, written after set 1 with less overlap in wording with the originals, plus wrong-polarity and wrong-sense distractors. No parameter was tuned on it, but it was written knowing the corpus, so read it as \"harder\", not as an independent benchmark.",
+      "queries": [
+        {"id": "h1", "text": "a small green animal climbed onto a piece of timber at sunrise", "expect": ["frog_log"]},
+        {"id": "h2", "text": "the creature hid from the bird and would not move", "expect": ["frog_still"]},
+        {"id": "h3", "text": "costs went up because of new levies on foreign goods", "expect": ["tariff_hurt"]},
+        {"id": "h4", "text": "did the firm get money back from customs authorities", "expect": ["tariff_margin"]},
+        {"id": "h5", "text": "lender raises borrowing costs to fight rising prices", "expect": ["bank_rates"]},
+        {"id": "h6", "text": "something took off and went into space", "expect": ["rocket"]},
+        {"id": "h7", "text": "baking a loaf at home", "expect": ["bread"]},
+        {"id": "h8", "text": "pet went missing and a kid brought it back", "expect": ["lost_dog"]},
+        {"id": "h9", "text": "walking to the top of a hill and sheltering in a cabin", "expect": ["mountain_hike"]},
+        {"id": "h10", "text": "an amphibian stayed still because a predator was nearby", "expect": ["frog_still"]},
+        {"id": "h11", "text": "toad resting at the edge of a stream", "expect": ["river_bank"]}
+      ]
+    },
+    {
+      "name": "set 3",
+      "description": "Nine queries about the stories added after the first eleven. Near-misses are the point: shipping costs are not import duties, a night watchman's \"duties\" are not import duties, village \"customs\" are not customs levies.",
+      "queries": [
+        {"id": "n1", "text": "did the company suffer a cyberattack?", "expect": ["cyber_incident"]},
+        {"id": "n2", "text": "who will replace the chief executive?", "expect": ["ceo_departure"]},
+        {"id": "n3", "text": "ships stuck at port pushing up freight costs", "expect": ["supply_chain"]},
+        {"id": "n4", "text": "management lowered its outlook for the year", "expect": ["guidance_cut"]},
+        {"id": "n5", "text": "how much was the patent lawsuit settled for?", "expect": ["litigation"]},
+        {"id": "n6", "text": "the lender set aside money for bad loans", "expect": ["regional_bank"]},
+        {"id": "n7", "text": "what were the night watchman's responsibilities?", "expect": ["job_duties"]},
+        {"id": "n8", "text": "what traditions does the village keep at its harvest festival?", "expect": ["village_customs"]},
+        {"id": "n9", "text": "the company will buy back its own stock", "expect": ["buyback"]}
+      ]
+    }
+  ]
+}
