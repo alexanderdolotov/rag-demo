@@ -32,7 +32,8 @@ docker start opensearch-poc neo4j-poc          # on later days (the containers k
 ```
 
 Developed against Python 3.9, OpenSearch 3.9.0, Neo4j 2026.10.1 (the code uses the `SEARCH` clause that Neo4j's vector and full-text indexes
-have in 2026.x, so an older Neo4j will not do) and sentence-transformers 5.1 with `all-MiniLM-L6-v2` (384-number vectors). The `latest` tags move;
+have in 2026.x, so an older Neo4j will not do), sentence-transformers 5.1 with `all-MiniLM-L6-v2` (384-number vectors) and, for the
+Anthropic key, the `anthropic` package (0.125 on Python 3.9; 1.x needs Python 3.10). The `latest` tags move;
 pin them if you want the same versions later. Settings, all optional:
 
 | Variable | Default | What for |
@@ -41,7 +42,7 @@ pin them if you want the same versions later. Settings, all optional:
 | `NEO4J_URI` | `bolt://localhost:7687` | where Neo4j is |
 | `NEO4J_USER`, `NEO4J_PASSWORD` | unset: no login | Neo4j login (used when the password is set) |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | the model that turns texts and questions into vectors |
-| `OPENROUTER_API_KEY` | none; put it in `.env` (git-ignored, see `.env.example`) | the LLM steps with the default provider |
+| `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | none; put one or both in `.env` (git-ignored, see `.env.example`) | the LLM steps; the first one listed in `.env` that is filled in and works is used, see "Which key is used" |
 | `OLLAMA_URL` | `http://localhost:11434` | the LLM steps with `--provider ollama` |
 
 The Neo4j browser is at http://localhost:7474 (try `MATCH (a:StoryTerm {stem:'toad'})-[c:CO]-(b) RETURN a,c,b LIMIT 25`). The Neo4j *community*
@@ -56,7 +57,17 @@ the five rewrite styles in [stories/README.md](stories/README.md)). `data_load.p
 python data_load.py             # load what is missing; nothing to do if both already hold these files; refuses to overwrite a different corpus
 python data_load.py --reload    # first delete this project's data in both databases, then load again
 python data_load.py --status    # what each database holds compared with the files; changes nothing
+python data_load.py --no-rewrites   # load only the original of each story (20 versions instead of 120)
 ```
+
+`--no-rewrites` leaves the rewrites out of both databases, and a story folder then needs no rewrite files at all. It is a different corpus, so
+switching between the two takes `--reload` (the refusal says which scope each database holds); add `--no-rewrites --reload` together to switch to
+originals only, and `--reload` alone to go back. `--status --no-rewrites` compares the databases with the originals only. Everything that
+searches still works: `ask_stories.py` reads which scope was loaded and checks against that (its banner says "originals only"). What you lose
+is what the rewrites give: the vector arms have one text per story to match instead of six, and the graph's `n_co` method has no
+other wording to learn word links from. `test/compare_stories.py` compares the full corpus and reports a scope mismatch if you run it on
+an originals-only load; the tests and the hard-question benchmark build their own scratch copies from the files, so what you loaded does not
+affect them. Data loaded before this option existed counts as the full corpus.
 
 Both databases store a fingerprint of the files they were loaded from, and `ask_stories.py` / `test/compare_stories.py` refuse to run when it no
 longer matches (edit a story, then `--reload`). The fingerprint covers the story text only: after changing the analysis settings or the
@@ -78,12 +89,13 @@ the search is **one-shot with concept priority**: the LLM analyses the question 
 are each searched once per concept, in one round. Without an LLM (`--no-llm`, or no key) the question is searched once as typed.
 
 ```bash
-echo 'OPENROUTER_API_KEY=...' > .env       # once; .env is git-ignored. An exported OPENROUTER_API_KEY wins over the file
+echo 'OPENROUTER_API_KEY=...' > .env       # once; .env is git-ignored (add ANTHROPIC_API_KEY=... too if you have one). An exported variable wins over the file
 python ask_stories.py                     # analysis + one search per concept + scoring + one answer per database from what scored well
 python ask_stories.py --no-rewrite        # ... question searched as typed (the scoring still judges it)
 python ask_stories.py --no-rerank         # ... databases' own order, nothing scored or cut
 python ask_stories.py --no-llm            # retrieval only, no key needed (one search, question as typed)
 python ask_stories.py --judge             # + a last call says which answer is better supported (random A/B order; a hint only)
+python ask_stories.py --provider anthropic   # only the Anthropic key (or openrouter); the default, auto, takes the keys in .env order
 python ask_stories.py --provider ollama   # local model instead (default qwen3:8b; needs `ollama serve` and `ollama pull qwen3:8b`)
 python ask_stories.py --os-arm dense --neo-arm n_vec     # compare other methods (see --help for the arm names)
 python ask_stories.py --debug              # print the exact requests sent to each database (OpenSearch JSON bodies, Neo4j Cypher + parameters)
@@ -91,6 +103,26 @@ python ask_stories.py --debug              # print the exact requests sent to ea
 
 `--one-shot`, `--rewrite` and `--rerank` are accepted and do nothing: the search is always one-shot and both LLM steps are on by default. Which
 arguments reproduce which test mode is in the table under "Hard questions".
+
+### Which key is used
+
+Put one or both keys in `.env`, in the order you prefer (`.env.example` shows the template). The rule is **the key listed first that is filled
+in and works**:
+
+1. A key whose value is empty is skipped (an empty `ANTHROPIC_API_KEY=` placeholder costs nothing).
+2. At start-up the app sends one tiny request (the word "ping") with the first remaining key. If the provider rejects it, is out of credit, or
+   cannot be reached, that key is skipped, the reason is printed (never the key), and the next key is checked. The first that answers is used;
+   the banner says which. If none answers, the app runs without the LLM, as with `--no-llm`.
+3. The keys after it stay as fall-backs. If the key in use is rejected, rate limited, erroring or unreachable in the middle of a session, that
+   call moves on to the next key and a note is printed; the failed key is not asked again until every key has failed. A one-off problem with a
+   single request (an empty reply, a malformed request) tries the next key for that call only.
+
+A key exported in your shell but not named in `.env` is used too, after the ones the file lists; if it is in both, the shell's value wins and the
+file's position counts. `--provider anthropic`, `openrouter` or `ollama` skips all of this and uses exactly that provider. `--model` replaces
+the model of the first key (or of the provider you named); the defaults are `claude-haiku-5-5` for Anthropic's own API and
+`anthropic/claude-haiku-5.5` for OpenRouter, so a fall-back runs the same model. Anthropic is called through the official `anthropic` package
+and sends no `temperature` (current Claude models reject any but the default); OpenRouter and Ollama are called over plain HTTP at temperature 0.
+The start-up check is one small request per key tried, only when an LLM is wanted (`--no-llm` makes no call).
 
 ### How a question is searched
 
@@ -117,8 +149,7 @@ words of your question occur (matched by stem, so "duties" finds "duty"), taken 
 around those words with `...` when it is longer than a line; a snippet from a version other than `via` is tagged, for example `[orig]`. When none
 of your words occurs (a match made by the vectors alone, such as `ceo`, a word no story contains) you see the start of the story instead. Scores
 are each engine's own, not comparable across databases. `--debug` shows only what the chosen method sends (embeddings are abbreviated to their
-first numbers; the real vector is sent), plus how the index analyses your words (stop words dropped, stemmed, synonyms added). The default
-OpenRouter model is `anthropic/claude-haiku-5.5` (change with `--model`).
+first numbers; the real vector is sent), plus how the index analyses your words (stop words dropped, stemmed, synonyms added).
 
 ## OpenSearch methods (tests)
 
@@ -214,7 +245,7 @@ a graph (word links inside the text), not graph databases in general. The timing
 
 ```bash
 pytest -v                                  # everything: about two minutes
-pytest test/test_corpus.py test/test_retrieval.py test/test_intent.py test/test_pipeline.py test/test_readme.py     # no database needed: seconds
+pytest test/test_corpus.py test/test_retrieval.py test/test_intent.py test/test_pipeline.py test/test_llm.py test/test_readme.py     # no database needed: seconds
 pytest test/test_hard_questions.py -v      # the hard-question benchmark, below
 ```
 
@@ -225,7 +256,8 @@ pytest test/test_hard_questions.py -v      # the hard-question benchmark, below
 | `test_intent.py` | the LLM's analysis and scores: what is accepted, what degrades to "search as typed", the prompts | nothing |
 | `test_pipeline.py` | the one-shot concept-priority logic, with a scripted search and a scripted LLM | nothing |
 | `test_readme.py` | the files and `ask_stories.py` commands this README names are real | nothing |
-| `test_data_load.py` | loading both databases from a 3-story corpus: refusals, reload, interrupted loads | both databases |
+| `test_llm.py` | the key order in `.env`, the Anthropic call (real SDK on a mock transport), falling back from one key to the next | nothing |
+| `test_data_load.py` | loading both databases from a 3-story corpus: refusals, reload, interrupted loads, `--no-rewrites` | both databases |
 | `test_opensearch_stories.py` | analyzers, index names, the findings on OpenSearch | OpenSearch |
 | `test_neo4j_stories.py` | tokens, the graph, the comparison matrix as assertions | both |
 | `test_ask_stories.py` | helpers, the LLM client with a fake HTTP layer, the whole question-to-answer flow with a scripted LLM | both |
@@ -349,7 +381,8 @@ python test/hard_report.py --write                       # refresh the tables ab
 | `stories/` | the corpus (20 stories x 6 files), the test queries (`queries.json`) and its README |
 | `corpus.py` | reads and validates `stories/` and its queries, fingerprints the corpus |
 | `data_load.py` | loads both databases from the files (`--reload`, `--status`) |
-| `ask_stories.py` | the interactive two-database script (LLM client, the question-to-answer flow, display, `--debug`) |
+| `ask_stories.py` | the interactive two-database script (the question-to-answer flow, display, `--debug`) |
+| `llm.py` | the LLM client: OpenRouter, Anthropic's own API, Ollama; the keys in `.env` and the fall-back from one to the next |
 | `opensearch_stories.py`, `neo4j_stories.py` | index / graph building and every search method, per database |
 | `retrieval.py` | what the two share: embedding model, rank fusion, versions to stories, picking arms, hit@3 / MRR, the tiered `Query` |
 | `intent.py` | the LLM's analysis of a question and its 0-3 scores: prompts and parsers, no services |

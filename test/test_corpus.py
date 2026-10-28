@@ -68,6 +68,17 @@ def test_two_files_for_the_same_rewrite_number_are_refused(tmp_path):
         corpus.load_corpus(tmp_path)
 
 
+def test_a_story_with_only_an_original_is_refused_unless_the_rewrites_are_not_required(tmp_path):
+    make(tmp_path, frog={"original.txt": "a frog"}, bread={"original.txt": "dough", "rewrite-1.txt": "a loaf"})
+    with pytest.raises(corpus.CorpusError, match="frog: no rewrites"):
+        corpus.load_corpus(tmp_path)
+    docs = corpus.load_corpus(tmp_path, require_rewrites=False)
+    assert [d["id"] for d in docs] == ["bread:orig", "bread:rw1", "frog:orig"]
+    with pytest.raises(corpus.CorpusError, match="no original.txt"):                      # everything else is still checked
+        make(tmp_path, **{"owl": {"rewrite-1.txt": "x"}})
+        corpus.load_corpus(tmp_path, require_rewrites=False)
+
+
 def test_bad_folder_names_and_empty_roots_are_refused(tmp_path):
     with pytest.raises(corpus.CorpusError, match="no story folders"):
         corpus.load_corpus(tmp_path)

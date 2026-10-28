@@ -13,6 +13,7 @@ pytest.importorskip("nltk")
 
 import corpus  # noqa: E402
 import data_load  # noqa: E402
+import ask_stories as ask  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
 
@@ -207,3 +208,116 @@ def test_the_command_line_reports_and_returns_exit_codes(driver, embedder, story
     assert data_load.main(base + ["--reload"]) == 0 and "removed: 9 OpenSearch documents" in capsys.readouterr().out
     (story_dir / "bread" / "original.txt").unlink()
     assert data_load.main(base) == 2 and "stories folder problem" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- --no-rewrites: only the original version of each story
+def originals_of(story_dir):
+    return data_load.in_scope(docs_of(story_dir), False)
+
+
+def test_the_scope_helpers():
+    docs = [{"kind": "original", "id": "a:orig"}, {"kind": "rewrite", "id": "a:rw1"}]
+    assert data_load.has_rewrites(docs) and not data_load.has_rewrites(docs[:1])
+    assert data_load.in_scope(docs, True) == docs and data_load.in_scope(docs, False) == docs[:1]
+
+
+def test_loading_without_the_rewrites_puts_only_the_originals_in_both_databases_and_records_it(driver, embedder, story_dir):
+    origs = originals_of(story_dir)
+    result = data_load.run(origs, INDEX, driver, embedder)
+    assert result["loaded"] == ["opensearch", "neo4j"]
+    assert os_s.index_state(INDEX)["docs"] == 3 and ns.read_meta(driver)["versions"] == 3
+    assert os_s.index_state(INDEX)["meta"]["rewrites"] is False and ns.read_meta(driver)["rewrites"] is False
+    kinds_os = {h["_source"]["kind"] for h in os_s.call("POST", f"/{INDEX}/_search", {"size": 20, "query": {"match_all": {}}, "_source": ["kind"]})["hits"]["hits"]}
+    kinds_neo = {r["k"] for r in ns._run(driver, "MATCH (v:StoryVersion) RETURN v.kind AS k")}
+    assert kinds_os == kinds_neo == {"original"}
+    assert data_load.problems(origs, INDEX, driver) == [] and os_s.index_state(INDEX)["meta"]["corpus_hash"] == ns.read_meta(driver)["corpus_hash"]
+    assert ns._run(driver, "MATCH (v:StoryVersion) WHERE v.kind <> 'original' RETURN count(v) AS n")[0]["n"] == 0
+
+
+def test_the_rewrites_do_not_matter_to_an_originals_only_load(driver, embedder, story_dir):
+    origs = originals_of(story_dir)
+    data_load.run(origs, INDEX, driver, embedder)
+    (story_dir / "bread" / "rewrite-1.txt").write_text("A completely different rewrite.")
+    assert data_load.problems(originals_of(story_dir), INDEX, driver) == []                  # nothing loaded was edited
+    (story_dir / "bread" / "original.txt").write_text("She baked.")
+    assert len(data_load.problems(originals_of(story_dir), INDEX, driver)) == 2             # the original was: both databases are out of date
+
+
+def test_switching_between_the_scopes_is_refused_until_reload_and_says_why(driver, embedder, story_dir):
+    full, origs = docs_of(story_dir), originals_of(story_dir)
+    data_load.run(origs, INDEX, driver, embedder)
+    with pytest.raises(RuntimeError, match="different corpus") as refused:
+        data_load.run(full, INDEX, driver, embedder)
+    assert "without its rewrites" in str(refused.value) and "--reload" in str(refused.value)
+    assert os_s.index_state(INDEX)["docs"] == 3                                                # the refusal changed nothing
+    assert any("holds the corpus without its rewrites (the originals only), not with its rewrites" in p for p in data_load.problems(full, INDEX, driver))
+    data_load.run(full, INDEX, driver, embedder, reload=True)
+    assert os_s.index_state(INDEX)["docs"] == 9 and data_load.problems(full, INDEX, driver) == []
+    with pytest.raises(RuntimeError, match="with its rewrites"):
+        data_load.run(origs, INDEX, driver, embedder)
+    data_load.run(origs, INDEX, driver, embedder, reload=True)
+    assert os_s.index_state(INDEX)["docs"] == 3 and data_load.problems(origs, INDEX, driver) == []
+
+
+def test_data_loaded_before_the_scope_was_recorded_counts_as_the_full_corpus(driver, embedder, story_dir):
+    full = docs_of(story_dir)
+    data_load.run(full, INDEX, driver, embedder)
+    ns._run(driver, "MATCH (m:StoryCorpus) REMOVE m.rewrites")                                  # what an older load looks like ...
+    meta = {k: v for k, v in os_s.index_state(INDEX)["meta"].items() if k != "rewrites"}
+    os_s.call("PUT", f"/{INDEX}/_mapping", {"_meta": meta})                                     # ... in both databases
+    assert data_load.problems(full, INDEX, driver) == [] and data_load.loaded_scope(INDEX, driver) is True
+
+
+def test_a_script_that_searches_whatever_was_loaded_gets_the_files_in_the_loaded_scope(driver, embedder, story_dir):
+    full, origs = docs_of(story_dir), originals_of(story_dir)
+    assert data_load.loaded_scope(INDEX, driver) is None                                        # nothing loaded yet
+    data_load.run(origs, INDEX, driver, embedder)
+    assert data_load.loaded_scope(INDEX, driver) is False and data_load.check(full, INDEX, driver) == (origs, [])
+    data_load.run(full, INDEX, driver, embedder, reload=True)
+    assert data_load.loaded_scope(INDEX, driver) is True and data_load.check(full, INDEX, driver) == (full, [])
+
+
+def test_two_databases_that_disagree_about_the_scope_are_reported_not_trusted(driver, embedder, story_dir):
+    full, origs = docs_of(story_dir), originals_of(story_dir)
+    data_load.load(full, INDEX, driver, embedder, ("opensearch",))
+    data_load.load(origs, INDEX, driver, embedder, ("neo4j",))
+    assert data_load.loaded_scope(INDEX, driver) is None
+    wanted, found = data_load.check(full, INDEX, driver)
+    assert wanted == full and len(found) == 1 and found[0].startswith("Neo4j holds the corpus without its rewrites")
+
+
+def test_ask_stories_can_search_an_originals_only_load(driver, embedder, story_dir):
+    origs = originals_of(story_dir)
+    data_load.run(origs, INDEX, driver, embedder)
+    docs, found = data_load.check(docs_of(story_dir), INDEX, driver)
+    assert found == []
+    stores = ask.Stores(INDEX, ns.StoryGraph.attach(driver, embedder), embedder, corpus.originals(docs), {d["id"]: d["text"] for d in docs})
+    res = ask.ask("a frog by the water", stores, ask.Options(), None)
+    for name, rows in res.rows.items():
+        assert rows and {r["via"] for r in rows} == {"orig"}, name                              # only originals exist to be found
+        assert rows[0]["topic"] == "frogs", name
+
+
+def test_the_command_line_loads_originals_only_for_stories_that_have_no_rewrites_at_all(driver, embedder, tmp_path, capsys):
+    for name, text in (("frogs", "A frog sat by the pond."), ("bread", "She baked two loaves.")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "original.txt").write_text(text)
+    base = ["--stories-dir", str(tmp_path), "--index", INDEX]
+    assert data_load.main(base) == 2 and "bread: no rewrites" in capsys.readouterr().out    # as ever, a full corpus needs its rewrites
+    assert data_load.main(base + ["--no-rewrites"]) == 0
+    out = capsys.readouterr().out
+    assert "2 versions, originals only" in out and "loaded into: opensearch, neo4j" in out and "(originals only)" in out
+    assert data_load.main(base + ["--no-rewrites", "--status"]) == 0
+    status = capsys.readouterr().out
+    assert status.count("same") == 2 and status.count("originals only") >= 3
+    assert data_load.main(base + ["--no-rewrites"]) == 0 and "nothing to do" in capsys.readouterr().out
+
+
+def test_the_command_line_reports_a_scope_mismatch_and_reload_fixes_it(driver, embedder, story_dir, capsys):
+    base = ["--stories-dir", str(story_dir), "--index", INDEX]
+    assert data_load.main(base + ["--no-rewrites"]) == 0
+    capsys.readouterr()
+    assert data_load.main(base) == 1 and "without its rewrites" in capsys.readouterr().out
+    assert data_load.main(base + ["--status"]) == 0 and capsys.readouterr().out.count("different") == 2
+    assert data_load.main(base + ["--reload"]) == 0 and "check: both databases hold the same corpus" in capsys.readouterr().out
+    assert os_s.index_state(INDEX)["docs"] == 9

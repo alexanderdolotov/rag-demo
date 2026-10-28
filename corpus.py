@@ -34,8 +34,9 @@ class QuerySet(NamedTuple):
     queries: List[Tuple[str, str, Tuple[str, ...]]]   # (query id, text, story ids that count as a correct answer)
 
 
-def load_corpus(root: Path = STORIES_DIR) -> List[Dict]:
-    """Every version of every story, ordered by story id, the original first. Raises CorpusError on anything unexpected."""
+def load_corpus(root: Path = STORIES_DIR, require_rewrites: bool = True) -> List[Dict]:
+    """Every version of every story, ordered by story id, the original first. Raises CorpusError on anything unexpected, including (unless
+    `require_rewrites` is False, for a corpus of originals) a story with no rewrites."""
     root = Path(root)
     if not root.is_dir():
         raise CorpusError(f"{root} is not a folder")
@@ -56,7 +57,7 @@ def load_corpus(root: Path = STORIES_DIR) -> List[Dict]:
             if number in numbered:   # rewrite-1.txt and rewrite-01.txt would both become version rw1
                 raise CorpusError(f"{story.name}: {numbered[number].name} and {name} are both rewrite {number}")
             numbered[number] = path
-        if not numbered:
+        if not numbered and require_rewrites:
             raise CorpusError(f"{story.name}: no rewrites")
         versions += [(f"rw{n}", path) for n, path in sorted(numbered.items())]
         for version, path in versions:

@@ -4,4 +4,5 @@ urllib3<2                   # macOS system Python is built on LibreSSL; urllib3 
 pytest>=8.0
 sentence-transformers>=5.1  # sentence embeddings (~90 MB model downloads on first use; pulls in torch)
 neo4j>=5.28                 # graph database client
+anthropic>=0.50             # Claude's own API; only used when ANTHROPIC_API_KEY is in .env (0.x on Python 3.9; 1.x needs Python 3.10+)
 nltk>=3.9                   # Snowball stemmer for the graph side (no data downloads needed)

@@ -239,9 +239,9 @@ def build_graph(driver, prep: Prepared, targets: str = "all", learn_from: str = 
     avg_len = sum(d["length"] for d in target_docs) / n_docs
     counts = {"versions": n_docs, "terms": len(stems), "co_edges": len(edges)}
     # one node that says what was loaded: the corpus fingerprint, the scenario, and what a later session needs to search it
-    _run(driver, "CREATE (:StoryCorpus {corpus_hash: $hash, targets: $targets, learn_from: $learn_from, avg_len: $avg_len, "
+    _run(driver, "CREATE (:StoryCorpus {corpus_hash: $hash, rewrites: $rewrites, targets: $targets, learn_from: $learn_from, avg_len: $avg_len, "
                  "versions: $versions, stories: $stories, terms: $terms, co_edges: $co_edges, loaded_at: $loaded_at})",
-         {"hash": (meta or {}).get("corpus_hash", ""), "targets": targets, "learn_from": learn_from, "avg_len": avg_len,
+         {"hash": (meta or {}).get("corpus_hash", ""), "rewrites": (meta or {}).get("rewrites", True), "targets": targets, "learn_from": learn_from, "avg_len": avg_len,
           "stories": len({d["topic"] for d in target_docs}), "loaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **counts})
     return StoryGraph(driver, prep, targets, learn_from, avg_len=avg_len, counts=counts, embedder=embedder)
 

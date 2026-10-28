@@ -10,7 +10,8 @@ each database's own top 5, so you can feel how the two behave side by side.
     python ask_stories.py --no-rerank          # ... without the scoring: the databases' own order
     python ask_stories.py --no-llm             # retrieval only, no key needed (one search with the question as typed)
     python ask_stories.py --judge              # + a last call says which answer is better supported (a hint, not a measurement)
-    python ask_stories.py --provider ollama    # local model instead of OpenRouter (default model qwen3:8b)
+    python ask_stories.py --provider anthropic # only that key (or openrouter, or ollama = a local model); the default, auto, uses the keys
+                                               # in .env in the order the file lists them: the first that is filled in and works, the next as fall-back
     python ask_stories.py --debug              # + the exact requests sent to each database (OpenSearch JSON, Neo4j Cypher + parameters)
 
 The corpus is the story files in stories/, loaded once into both databases by data_load.py (this script refuses to run if
@@ -35,8 +36,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-import requests
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import corpus  # noqa: E402
 import data_load  # noqa: E402
@@ -45,12 +44,9 @@ import opensearch_stories as os_s  # noqa: E402
 import pipeline  # noqa: E402
 import retrieval  # noqa: E402
 from intent import ANALYZE_SYSTEM, Intent, flat_intent, parse_intent  # noqa: E402
+from llm import DEFAULT_MODELS, ENV_FILE, OPENROUTER_URL, REQUEST_TIMEOUT, chat, connect, failed, keys_in_order, load_env  # noqa: E402,F401  (some re-exported)
 from retrieval import Query, Searchable  # noqa: E402
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODELS = {"openrouter": "anthropic/claude-haiku-5.5", "ollama": "qwen3:8b"}
-REQUEST_TIMEOUT = 120
-ENV_FILE = Path(__file__).resolve().parent / ".env"   # git-ignored; holds OPENROUTER_API_KEY
 POOL = 10      # stories each database hands on from one search (the most it can show)
 DBS = ("OpenSearch", "Neo4j")
 SEARCH_SIZE = 30   # versions requested from each database before they are collapsed to stories
@@ -70,51 +66,6 @@ JUDGE_SYSTEM = ("You compare two answers to the same question. Each answer was w
                 "better supported by its passages and more useful: A, B or tie, then give one or two sentences of reason.")
 
 LLM = Callable[[str, str], str]   # (system prompt, user prompt) -> reply; failures come back as "[LLM error: ...]" text
-
-
-# ---------------------------------------------------------------------------
-# LLM client
-# ---------------------------------------------------------------------------
-def chat(provider: str, model: str, system: str, user: str, url: str = "http://localhost:11434",
-         key: Optional[str] = None, post=requests.post) -> str:
-    """One chat completion at temperature 0. Never raises: a failure comes back as '[LLM error: ...]' so the retrieval output still prints."""
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    try:
-        if provider == "openrouter":
-            key = os.environ.get("OPENROUTER_API_KEY", "") if key is None else key
-            if not key:
-                return "[LLM error: OPENROUTER_API_KEY is not set]"
-            resp = post(OPENROUTER_URL, timeout=REQUEST_TIMEOUT,
-                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                                 "X-Title": "rag_demo"},
-                        json={"model": model, "temperature": 0, "messages": messages})
-        else:
-            resp = post(f"{url}/api/chat", timeout=REQUEST_TIMEOUT,
-                        json={"model": model, "stream": False, "options": {"temperature": 0, "num_ctx": 8192}, "messages": messages})
-        if resp.status_code >= 400:
-            return f"[LLM error: HTTP {resp.status_code} {resp.text[:200]}]"
-        body = resp.json()
-        text = body["choices"][0]["message"]["content"] if provider == "openrouter" else body["message"]["content"]
-        return re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL).strip() or "[LLM error: empty reply]"
-    except Exception as e:  # noqa: BLE001 - the caller only needs the message
-        return f"[LLM error: {type(e).__name__}: {e}]"
-
-
-def load_env(path: Path = ENV_FILE) -> None:
-    """Put the KEY=VALUE lines of a .env file into the environment; variables that are already set win. A missing file is fine."""
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:
-        return
-    for line in lines:
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            name, value = line.split("=", 1)
-            os.environ.setdefault(name.strip().removeprefix("export ").strip(), value.strip().strip("\"'"))
-
-
-def failed(reply: str) -> bool:
-    return reply.startswith("[LLM error")
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +398,11 @@ def render(res: Result, opts: Options) -> str:
 def make_parser() -> argparse.ArgumentParser:
     """The command line of this script (kept apart from main() so the tests can build the same Options from the same arguments)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--provider", choices=sorted(DEFAULT_MODELS), default="openrouter")
-    parser.add_argument("--model", help="default: anthropic/claude-haiku-5.5 (openrouter) or qwen3:8b (ollama)")
+    parser.add_argument("--provider", choices=["auto", *sorted(DEFAULT_MODELS)], default="auto",
+                        help="auto (default): the keys in .env in the order the file lists them, the first that is filled in and works; "
+                             "or exactly one of anthropic (ANTHROPIC_API_KEY), openrouter (OPENROUTER_API_KEY), ollama (local, no key)")
+    parser.add_argument("--model", help="replaces the model of the first key (or of the provider you named); defaults: "
+                                        + ", ".join(f"{p} {m}" for p, m in sorted(DEFAULT_MODELS.items())))
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_URL", "http://localhost:11434"))
     parser.add_argument("--no-llm", action="store_true", help="retrieval only")
     parser.add_argument("--no-rewrite", action="store_true", help="do not let the LLM analyse the question: search it as typed")
@@ -476,19 +430,13 @@ def main() -> None:
         parser.error(f"--top must be between 1 and {POOL}")
 
     llm: Optional[LLM] = None
-    model = args.model or DEFAULT_MODELS[args.provider]
-    if not args.no_llm:
-        if args.provider == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
-            print(f"OPENROUTER_API_KEY is not set (put it in {ENV_FILE} or export it): showing retrieval only; or use --provider ollama")
-        elif args.provider == "ollama" and not _ollama_up(args.ollama_url):
-            print(f"Ollama is not answering at {args.ollama_url}: showing retrieval only")
-        else:
-            llm = lambda system, user: chat(args.provider, model, system, user, url=args.ollama_url)  # noqa: E731
+    if not args.no_llm:                                    # one tiny request per key, in the order .env lists them, until one answers
+        llm = connect(args.provider, args.model, args.ollama_url, keys_in_order())
     if llm is None and args.judge:
         print("--judge needs an LLM and is ignored in this run")
 
     try:
-        docs = corpus.load_corpus()
+        docs = corpus.load_corpus(require_rewrites=False)      # whether the rewrites were loaded is for check() to find out
     except corpus.CorpusError as e:
         sys.exit(f"stories folder problem: {e}")
     if not os_s.reachable():
@@ -502,15 +450,16 @@ def main() -> None:
     index = data_load.INDEX
     driver = ns.connect()
     try:
-        found = data_load.problems(docs, index, driver)
+        docs, found = data_load.check(docs, index, driver)          # the story files in the scope the databases were loaded with
         if found:
-            sys.exit("The databases do not hold the story files:\n  " + "\n  ".join(found) + "\nLoad them with: python data_load.py --reload")
+            sys.exit("The databases do not hold the story files:\n  " + "\n  ".join(found)
+                     + "\nLoad them with: python data_load.py --reload   (add --no-rewrites to load only the originals)")
         stores = Stores(index, ns.StoryGraph.attach(driver, embedder), embedder, corpus.originals(docs), {d["id"]: d["text"] for d in docs})
         opts = options_from(args, llm)
         ask("warm up", stores, Options(args.os_arm, args.neo_arm), None)   # the first search pays for model and connection start-up
         steps = [name for name, on in (("rewrite", opts.rewrite), ("rerank", opts.rerank), ("judge", opts.judge)) if on and llm]
-        print(f"\n{len(docs)} texts / {len(stores.originals)} stories (identical files) loaded in both databases. "
-              f"LLM: {f'{args.provider} {model}' if llm else 'off'}. LLM steps: {', '.join(steps) or 'none'}{'; debug on' if opts.debug else ''}.")
+        print(f"\n{len(docs)} texts / {len(stores.originals)} stories (identical files{'' if data_load.has_rewrites(docs) else ', originals only'}) loaded in both databases. "
+              f"LLM: {llm.describe() if llm else 'off'}. LLM steps: {', '.join(steps) or 'none'}{'; debug on' if opts.debug else ''}.")
         print("Try:\n  " + "\n  ".join(SAMPLES) + "\n(/quit or Ctrl-D to leave)")
         while True:
             try:
@@ -523,13 +472,6 @@ def main() -> None:
                 print(render(ask(question, stores, opts, llm), opts))
     finally:
         driver.close()
-
-
-def _ollama_up(url: str) -> bool:
-    try:
-        return requests.get(f"{url}/api/tags", timeout=3).ok
-    except requests.RequestException:
-        return False
 
 
 if __name__ == "__main__":
