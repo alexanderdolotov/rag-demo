@@ -32,13 +32,22 @@ def index(embedder, opensearch):
     os_s.drop_index(name)
 
 
+def scoreboard(index, queries, embedder=None, kind=None):
+    """{arm: {"hit3": queries with a correct answer in the top 3, "mrr": mean reciprocal rank, "n": queries}} over `queries` (id, text, correct stories)."""
+    ranks = {}
+    for _, text, expect in queries:
+        for arm, hits in os_s.run_arms(index, text, embedder, kind).items():
+            ranks.setdefault(arm, []).append(retrieval.first_relevant_rank(hits, expect))
+    return {arm: {"hit3": hit3, "mrr": round(mrr, 3), "n": len(r)} for arm, r in ranks.items() for hit3, mrr in [retrieval.summarize(r)]}
+
+
 def rank(index, arm, qid, kind=None, embedder=None):
     text, expect = Q[qid]
     return retrieval.first_relevant_rank(os_s.run_arms(index, text, embedder, kind)[arm], expect)
 
 
 # --------------------------------------------------------------------------- index names (no OpenSearch needed)
-@pytest.mark.parametrize("name", ["stories", "stories_smoke", "stories-2", "a1"])
+@pytest.mark.parametrize("name", ["stories", "stories_scratch", "stories-2", "a1"])
 def test_ordinary_index_names_are_accepted(name):
     assert os_s.index_name(name) == name
 
@@ -131,8 +140,8 @@ def test_synonyms_close_the_gap_on_the_originals(index):
 
 def test_rewrites_make_plain_keyword_search_work_too(index):
     """The user's rewrite idea: with rewrites in the index even plain BM25 finds the story."""
-    originals = os_s.scoreboard(index, QUERIES, kind="original")["plain"]["mrr"]
-    everything = os_s.scoreboard(index, QUERIES)["plain"]["mrr"]
+    originals = scoreboard(index, QUERIES, kind="original")["plain"]["mrr"]
+    everything = scoreboard(index, QUERIES)["plain"]["mrr"]
     assert everything > originals + 0.2
     assert rank(index, "plain", "q3") == 1                            # via the toad rewrite
 
@@ -170,13 +179,13 @@ def test_vectors_tell_refused_to_jump_from_jumped_better_than_keywords(index, ve
 
 def test_vectors_alone_are_at_least_as_good_as_the_hand_written_synonym_list(index, vectors):
     """On set 1 the synonym list ranks higher (it was written knowing those queries), so the comparison is made on the harder set 2."""
-    assert os_s.scoreboard(index, QUERIES, vectors, kind="original")["dense"]["hit3"] == len(QUERIES)
-    board = os_s.scoreboard(index, HARDER, vectors, kind="original")
+    assert scoreboard(index, QUERIES, vectors, kind="original")["dense"]["hit3"] == len(QUERIES)
+    board = scoreboard(index, HARDER, vectors, kind="original")
     assert board["dense"]["hit3"] == board["dense"]["n"]
     assert board["dense"]["mrr"] >= board["syn"]["mrr"]
 
 
 def test_the_hybrid_and_story_views_still_answer_every_query(index, vectors):
     for arm in ("hybrid", "story"):
-        board = os_s.scoreboard(index, QUERIES, vectors)
+        board = scoreboard(index, QUERIES, vectors)
         assert board[arm]["hit3"] == board[arm]["n"], arm

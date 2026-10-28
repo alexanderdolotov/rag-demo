@@ -1,8 +1,9 @@
 """
 Graph database (Neo4j) against search engine (OpenSearch) on the story corpus in stories/ - the findings of
-compare_stories.py as tests. They need both services and skip themselves when one is not running; the vector
-tests also skip without `sentence-transformers`. They use their own `stories_cmp_test` index in OpenSearch and the
-Story / StoryVersion / StoryTerm nodes in Neo4j (rewritten from scratch by every scenario).
+test/compare_stories.py as tests. They need both services and skip themselves when one is not running; the vector
+tests also skip without `sentence-transformers`. They use their own `stories_cmp_test` index in OpenSearch and a
+`Test`-prefixed graph in Neo4j (conftest.py sets the prefix; every scenario rebuilds it from scratch), so the corpus
+loaded by data_load.py is never touched.
 
     docker start opensearch-poc neo4j-poc
     pytest test/test_neo4j_stories.py -v
@@ -16,7 +17,6 @@ import compare_stories as cs  # noqa: E402
 import corpus  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
-import retrieval  # noqa: E402
 
 INDEX = "stories_cmp_test"
 DOCS = corpus.load_corpus()

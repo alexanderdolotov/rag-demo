@@ -23,11 +23,11 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence
 
 import requests
 
-from retrieval import embed, first_relevant_rank, rrf, run_selected, story_level, summarize
+from retrieval import embed, rrf, run_selected, story_level
 
 URL = os.environ.get("OPENSEARCH_URL", "http://localhost:9200")
 
@@ -179,16 +179,3 @@ def run_arms(index: str, query: str, embedder=None, kind: Optional[str] = None, 
     if kind is None:
         builders["story"] = lambda get: story_level(get("hybrid") if embedder else rrf([get("syn")]))
     return run_selected(builders, only)
-
-
-# ---------------------------------------------------------------------------
-# Scoring
-# ---------------------------------------------------------------------------
-def scoreboard(index: str, queries: Sequence[Tuple[str, str, Tuple[str, ...]]], embedder=None, kind: Optional[str] = None) -> Dict[str, Dict[str, float]]:
-    """{arm: {"hit3": queries with a correct answer in the top 3, "mrr": mean reciprocal rank, "n": queries}} over `queries`
-    (id, text, correct story ids)."""
-    ranks: Dict[str, List[Optional[int]]] = {}
-    for _, text, expect in queries:
-        for arm, hits in run_arms(index, text, embedder, kind).items():
-            ranks.setdefault(arm, []).append(first_relevant_rank(hits, expect))
-    return {arm: {"hit3": hit3, "mrr": round(mrr, 3), "n": len(r)} for arm, r in ranks.items() for hit3, mrr in [summarize(r)]}

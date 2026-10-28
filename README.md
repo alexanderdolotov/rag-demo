@@ -13,7 +13,7 @@ docker start opensearch-poc neo4j-poc                  # first-time container se
 
 python data_load.py                                # load stories/ into both databases (once)
 python ask_stories.py                              # type a question, see both databases' top 5 and an LLM answer from each
-python compare_stories.py                          # 28 queries x 3 scenarios x every method, as a table
+python test/compare_stories.py                     # 28 queries x 3 scenarios x every method, as a table
 pytest test -v                                     # tests skip themselves when a service is down
 ```
 
@@ -28,33 +28,30 @@ python data_load.py --reload    # first delete this project's data in both datab
 python data_load.py --status    # what each database holds compared with the files; changes nothing
 ```
 
-Both databases store a fingerprint of the files they were loaded from, and `ask_stories.py` / `compare_stories.py` refuse to run when it no
+Both databases store a fingerprint of the files they were loaded from, and `ask_stories.py` / `test/compare_stories.py` refuse to run when it no
 longer matches (edit a story, then `--reload`). `--reload` deletes only the OpenSearch index `stories` and the Neo4j nodes labelled
 `Story`, `StoryVersion`, `StoryTerm`, `StoryCorpus`; anything else in either database is left alone (`--index` must be one plain index name: a
 wildcard, a comma list or `_all` is refused). An index is stamped with the fingerprint only after its last document is in, and a count
 that does not match the files is reported, so an interrupted load is never mistaken for a finished one. A load takes about 15 seconds
 (embeddings for 120 texts and about 2,200 words). Versions longer than the embedding window (512 tokens) are reported, not silently cut.
 
-Tests, `compare_stories.py` and the smoke run each work in their own namespace (other index names; Neo4j labels with a `Test` / `Cmp`
+The tests and `test/compare_stories.py` each work in their own namespace (other index names; Neo4j labels with a `Test` / `Cmp`
 prefix), so none of them touches the loaded corpus. `neo4j_stories.PREFIX` does that; an unprefixed delete-everything bug would still hit
 all of Neo4j, because the community edition has one database only.
 
-## OpenSearch methods (smoke run and tests)
+## OpenSearch methods (tests)
 
-The OpenSearch tests and `story_smoke.py` run on the same `stories/` corpus and the first query set from `stories/queries.json`, loaded into
-their own scratch indexes, to compare ways of finding the same concept when the words differ (the stories have LLM-style rewrites in
-different words and traps: polysemy, negation, unrelated stories). See the docstring of `opensearch_stories.py` for the methods compared.
+The OpenSearch tests run on the same `stories/` corpus and the first query set from `stories/queries.json`, loaded into their own scratch
+index, to compare ways of finding the same concept when the words differ (the stories have LLM-style rewrites in different words and traps:
+polysemy, negation, unrelated stories). See the docstring of `opensearch_stories.py` for the methods compared.
 
 ```bash
-python story_smoke.py                     # (re)loads a scratch `stories_smoke` index (not the loaded corpus) and prints every query and a scoreboard
-python story_smoke.py --no-vectors        # keyword arms only
 pytest test/test_opensearch_stories.py -v  # skips itself if OpenSearch is down; uses and removes a `stories_test` index
 ```
 
 | File | Purpose |
 |---|---|
-| `opensearch_stories.py` | synonym list, index mapping/analyzers, loaders, search arms, rank fusion, scoring |
-| `story_smoke.py` | command-line run: load, search, scoreboard |
+| `opensearch_stories.py` | synonym list, index mapping/analyzers, loaders, search arms |
 | `test/test_opensearch_stories.py` | the findings as assertions (analyzer behaviour, vocabulary gap, synonyms, rewrites, polysemy, vectors) |
 
 Caveats: 20 invented stories and 28 queries is a toy; the synonym list was written knowing the first queries, so the keyword-with-synonyms
@@ -76,8 +73,8 @@ docker run -d --name neo4j-poc -p 127.0.0.1:7474:7474 -p 127.0.0.1:7687:7687 -e 
   -e NEO4J_server_memory_heap_max__size=1G -e NEO4J_server_memory_pagecache_size=512m neo4j:latest
 docker start opensearch-poc neo4j-poc          # on later days
 
-python compare_stories.py                 # rank table per scenario on the loaded corpus (see "Comparison table")
-python compare_stories.py --explain       # also shows which terms the graph added to each query
+python test/compare_stories.py            # rank table per scenario on the loaded corpus (see "Comparison table")
+python test/compare_stories.py --explain  # also shows which terms the graph added to each query
 pytest test/test_neo4j_stories.py -v      # skips itself if either service is down; runs on `stories/` in a `Test`-prefixed graph
 ```
 
@@ -123,7 +120,7 @@ engine's own, not comparable across databases. Times include embedding the query
 
 ## Comparison table
 
-`compare_stories.py` runs three scenarios (originals only; rewrites used only as a thesaurus for the graph; originals and rewrites all
+`test/compare_stories.py` runs three scenarios (originals only; rewrites used only as a thesaurus for the graph; originals and rewrites all
 retrievable) over three query sets (set 1 = 8 first queries, set 2 = 11 harder ones, set 3 = 9 about the stories added after the first eleven; all in `stories/queries.json`) and
 prints the rank of the first correct story per query plus hit@3 and mean reciprocal rank per set. It reads the loaded OpenSearch index; the
 Neo4j scenario graphs are built under their own `Cmp` prefix and deleted afterwards. `--explain` adds the words the graph appended to each query.
@@ -136,8 +133,7 @@ Neo4j scenario graphs are built under their own `Cmp` prefix and deleted afterwa
 | `corpus.py` | reads and validates `stories/` and its queries, fingerprints the corpus |
 | `data_load.py` | loads both databases from the files (`--reload`, `--status`) |
 | `ask_stories.py` | the interactive two-database script (LLM client, optional steps, `--debug`) |
-| `compare_stories.py` | the comparison table |
+| `test/compare_stories.py` | the comparison table (a report, not pass/fail; `test_neo4j_stories.py` reuses its scenario runner) |
 | `opensearch_stories.py`, `neo4j_stories.py` | index / graph building and every search method, per database |
 | `retrieval.py` | what the two share: embedding model, rank fusion, versions to stories, picking arms, hit@3 / MRR |
-| `story_smoke.py` | quick demo on a scratch index of the corpus |
 | `test/` | `test_corpus.py`, `test_retrieval.py`, `test_data_load.py`, `test_ask_stories.py`, `test_opensearch_stories.py`, `test_neo4j_stories.py` |

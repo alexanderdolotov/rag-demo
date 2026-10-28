@@ -1,8 +1,8 @@
 """
 Search engine (OpenSearch) against graph database (Neo4j) on the same story corpus and the same queries.
 
-    python compare_stories.py                 # the story files in stories, in the loaded OpenSearch index and in Neo4j
-    python compare_stories.py --explain       # also prints which terms the graph added to each query
+    python test/compare_stories.py            # the story files in stories, in the loaded OpenSearch index and in Neo4j
+    python test/compare_stories.py --explain  # also prints which terms the graph added to each query
 
 Needs OpenSearch (OPENSEARCH_URL) and Neo4j (NEO4J_URI) loaded by data_load.py, see README.md. The OpenSearch arms read the
 loaded index. The three Neo4j scenarios are built under their own label prefix ("Cmp"), searched, then deleted again, so the
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # the project root
 import corpus  # noqa: E402
 import data_load  # noqa: E402
 import neo4j_stories as ns  # noqa: E402

@@ -9,7 +9,7 @@ Load the story files (stories/) into OpenSearch and Neo4j, once, so both databas
 --reload deletes only this project's data: the OpenSearch index `stories` and the Neo4j nodes labelled Story, StoryVersion,
 StoryTerm and StoryCorpus (the indexes and constraints starting with story_ / term_ are rebuilt). Anything else in either
 database is left alone. Both databases record a fingerprint of the files they were loaded from, so ask_stories.py and
-compare_stories.py can refuse to run against a database that no longer matches the files.
+test/compare_stories.py can refuse to run against a database that no longer matches the files.
 """
 from __future__ import annotations
 

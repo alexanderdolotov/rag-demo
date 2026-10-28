@@ -9,7 +9,7 @@ stories/<story_id>/rewrite-1.txt       five rewrites of it, in different words .
 
 Plain UTF-8 text, paragraphs separated by blank lines. The folder name is the story id (lowercase letters, digits, underscore).
 `corpus.py` refuses any other file name, an empty file, a missing original or no rewrites. Editing a file changes the corpus
-fingerprint, so `ask_stories.py` / `compare_stories.py` will tell you to run `data_load.py --reload`.
+fingerprint, so `ask_stories.py` / `test/compare_stories.py` will tell you to run `data_load.py --reload`.
 
 ## The test queries
 
