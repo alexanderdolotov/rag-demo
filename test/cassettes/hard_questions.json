@@ -1,0 +1,170 @@
+{
+ "meta": {
+  "model": "anthropic/claude-haiku-5.5",
+  "temperature": 0,
+  "calls_made": 98,
+  "replies": 32
+ },
+ "replies": {
+  "1fa9bdd36ab29cc6cf32": {
+   "role": "score",
+   "asked": "Question: What did the museum guard have to do each night?\n\nSubject to judge the passages against: museum guard's nightl",
+   "reply": "{\"buyback\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"job_duties\": 3, \"lost_dog\": 0, \"mountain_hike\": 0, \"rocket\": 0, \"stock_jump\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "2f65ff668f605bfe7d9c": {
+   "role": "analyze",
+   "asked": "Which company benefited from tariffs instead of being hurt by them?",
+   "reply": "{\"concepts\": [{\"name\": \"company that benefited from tariffs\", \"core\": [\"tariffs\", \"benefited\"], \"related\": [\"tariff\", \"duties\", \"trade barrier\", \"import tax\", \"profit\", \"gained\"]}], \"must\": [\"company gained from tariffs, not hurt by them\", \"tariffs as the cause of the benefit\"], \"context\": [\"company\"], \"unverifiable\": []}"
+  },
+  "300e7bca71d1f357f223": {
+   "role": "analyze",
+   "asked": "an amphibian that kept perfectly still because of a predator, and a firm that got money back from customs",
+   "reply": "{\"concepts\": [{\"name\": \"amphibian kept still from predator\", \"core\": [\"amphibian\", \"frog\", \"toad\"], \"related\": [\"freeze\", \"motionless\", \"still\", \"predator\", \"camouflage\", \"played dead\"]}, {\"name\": \"firm refunded by customs\", \"core\": [\"customs refund\", \"duty drawback\", \"customs\"], \"related\": [\"refund\", \"rebate\", \"duties\", \"tariff\", \"reimbursed\", \"firm\"]}], \"must\": [\"stayed motionless to avoid a predator\", \"money returned to a firm by customs\"], \"context\": [], \"unverifiable\": []}"
+  },
+  "3d61f3bea18ea57514e4": {
+   "role": "analyze",
+   "asked": "wat happend to the sharez after the retailer had a gud quater?",
+   "reply": "{\"concepts\": [{\"name\": \"retailer share price after a good quarter\", \"core\": [\"shares\", \"share price\"], \"related\": [\"stock price\", \"stock\", \"share value\", \"investors\", \"market reaction\", \"rose\"]}], \"must\": [\"share price movement after the retailer's good quarter\"], \"context\": [\"retailer\", \"good quarter\", \"earnings\"], \"unverifiable\": [\"real-world stock market data\"]}"
+  },
+  "49f0ad4d20edb5c2977e": {
+   "role": "score",
+   "asked": "Question: Which central bank decision made borrowing more expensive, and which lender was worried about bad loans?\n\nSubj",
+   "reply": "{\"bank_rates\": 3, \"bread\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"litigation\": 0, \"regional_bank\": 1, \"river_bank\": 0, \"rocket\": 0, \"supply_chain\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "55311c45a59de7fddb0c": {
+   "role": "score",
+   "asked": "Question: hello i want to know who is baking breal around here?\n\nSubject to judge the passages against: bread baking (co",
+   "reply": "{\"bank_rates\": 0, \"bread\": 3, \"ceo_departure\": 0, \"guidance_cut\": 0, \"lost_dog\": 1, \"mountain_hike\": 0, \"regional_bank\": 0, \"rocket\": 0, \"stock_jump\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"village_customs\": 3}"
+  },
+  "5672882b0c1617df9f53": {
+   "role": "score",
+   "asked": "Question: Which story is about an ascent on foot, and which is about leaving the Earth's surface?\n\nSubject to judge the ",
+   "reply": "{\"mountain_hike\": 3, \"river_bank\": 1, \"frog_log\": 1, \"rocket\": 0, \"lost_dog\": 0, \"frog_still\": 0, \"bank_rates\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"litigation\": 0, \"regional_bank\": 0, \"stock_jump\": 0, \"supply_chain\": 0, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "5699cb7f798d87964990": {
+   "role": "score",
+   "asked": "Question: Which company is changing its chief executive, and which one is buying back its own shares?\n\nSubject to judge ",
+   "reply": "{\"bread\": 0, \"buyback\": 0, \"ceo_departure\": 3, \"cyber_incident\": 1, \"frog_log\": 0, \"guidance_cut\": 1, \"litigation\": 0, \"lost_dog\": 0, \"regional_bank\": 0, \"rocket\": 0, \"stock_jump\": 0, \"supply_chain\": 0, \"tariff_hurt\": 1, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "5bd1434694cfc9c4a9f2": {
+   "role": "score",
+   "asked": "Question: wat happend to the sharez after the retailer had a gud quater?\n\nSubject to judge the passages against: retaile",
+   "reply": "{\"bank_rates\": 0, \"buyback\": 1, \"guidance_cut\": 1, \"litigation\": 0, \"regional_bank\": 0, \"stock_jump\": 3, \"supply_chain\": 1, \"tariff_hurt\": 1, \"tariff_margin\": 1}"
+  },
+  "7565f56284d256e7b5a9": {
+   "role": "score",
+   "asked": "Question: Which company's profit margin was squeezed by new tariffs?\n\nSubject to judge the passages against: company pro",
+   "reply": "{\"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"litigation\": 0, \"regional_bank\": 0, \"stock_jump\": 0, \"supply_chain\": 1, \"tariff_hurt\": 3, \"tariff_margin\": 1}"
+  },
+  "767bb204dc60e1198d1b": {
+   "role": "score",
+   "asked": "Question: Which central bank decision made borrowing more expensive, and which lender was worried about bad loans?\n\nSubj",
+   "reply": "{\"regional_bank\": 3, \"bank_rates\": 1, \"guidance_cut\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"bread\": 0, \"litigation\": 0, \"river_bank\": 0, \"rocket\": 0, \"supply_chain\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"village_customs\": 0, \"job_duties\": 0}"
+  },
+  "76e7b328952305597898": {
+   "role": "score",
+   "asked": "Question: an amphibian that kept perfectly still because of a predator, and a firm that got money back from customs\n\nSub",
+   "reply": "{\"tariff_margin\": 3, \"tariff_hurt\": 1, \"village_customs\": 0, \"bank_rates\": 0, \"buyback\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"lost_dog\": 0, \"regional_bank\": 0, \"river_bank\": 0, \"stock_jump\": 0, \"supply_chain\": 0}"
+  },
+  "864d0aabe7d1e2f35a38": {
+   "role": "score",
+   "asked": "Question: Which story is about an ascent on foot, and which is about leaving the Earth's surface?\n\nSubject to judge the ",
+   "reply": "{\"rocket\": 3, \"frog_log\": 1, \"bank_rates\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"frog_still\": 0, \"litigation\": 0, \"lost_dog\": 0, \"mountain_hike\": 0, \"regional_bank\": 0, \"river_bank\": 0, \"stock_jump\": 0, \"supply_chain\": 0, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "8b6c23c5564271625d6a": {
+   "role": "analyze",
+   "asked": "Which company's profit margin was squeezed by new tariffs?",
+   "reply": "{\"concepts\": [{\"name\": \"company profit margin squeezed by tariffs\", \"core\": [\"profit margin\", \"tariffs\"], \"related\": [\"margin squeeze\", \"profit pressure\", \"tariff costs\", \"import duties\", \"trade tariffs\", \"lower margins\"]}], \"must\": [\"profit margin reduced or squeezed\", \"caused by new tariffs, not other costs\"], \"context\": [\"company\"], \"unverifiable\": [\"which company the user means\"]}"
+  },
+  "92fbba9198eb533b9b67": {
+   "role": "score",
+   "asked": "Question: Which company benefited from tariffs instead of being hurt by them?\n\nSubject to judge the passages against: co",
+   "reply": "{\"tariff_margin\": 2, \"tariff_hurt\": 1, \"supply_chain\": 0, \"bank_rates\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"litigation\": 0, \"stock_jump\": 0, \"village_customs\": 0}"
+  },
+  "971b9ae204a4b03270db": {
+   "role": "score",
+   "asked": "Question: Which store chain got a big stock-market boost, and which furniture seller warned about weak demand?\n\nSubject ",
+   "reply": "{\"guidance_cut\": 3, \"supply_chain\": 1, \"tariff_hurt\": 1, \"stock_jump\": 0, \"bank_rates\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"lost_dog\": 0, \"rocket\": 0, \"tariff_margin\": 0}"
+  },
+  "995e29b02b3dfaec1dee": {
+   "role": "score",
+   "asked": "Question: Which store chain got a big stock-market boost, and which furniture seller warned about weak demand?\n\nSubject ",
+   "reply": "{\"stock_jump\": 3, \"guidance_cut\": 1, \"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"supply_chain\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"bank_rates\": 0, \"lost_dog\": 0, \"rocket\": 0}"
+  },
+  "995f5e2fdae08019afbb": {
+   "role": "analyze",
+   "asked": "Which central bank decision made borrowing more expensive, and which lender was worried about bad loans?",
+   "reply": "{\"concepts\": [{\"name\": \"central bank borrowing-cost decision\", \"core\": [\"central bank\", \"interest rate\"], \"related\": [\"rate hike\", \"base rate\", \"monetary policy\", \"rate rise\", \"policy rate\"]}, {\"name\": \"lender worried about bad loans\", \"core\": [\"bad loans\", \"lender\"], \"related\": [\"non-performing loans\", \"loan defaults\", \"provisions\", \"write-offs\", \"arrears\"]}], \"must\": [\"decision made borrowing more expensive, not cheaper\", \"lender expressed worry about bad loans or defaults\"], \"context\": [], \"unverifiable\": []}"
+  },
+  "a0992924d3edd517b766": {
+   "role": "analyze",
+   "asked": "Which companies reported that their profits fell?",
+   "reply": "{\"concepts\": [{\"name\": \"companies reporting falling profits\", \"core\": [\"profits fell\", \"profit decline\"], \"related\": [\"earnings drop\", \"profit fell\", \"lower profits\", \"net income decline\", \"profit warning\", \"reported losses\"]}], \"must\": [\"the company itself reported a fall in its profits\", \"profits fell, not rose or stayed flat\"], \"context\": [\"companies\", \"reported\"], \"unverifiable\": []}"
+  },
+  "a4ba08164c8cd154cd0d": {
+   "role": "analyze",
+   "asked": "What happened to the bank when the river flooded?",
+   "reply": "{\"concepts\": [{\"name\": \"bank damaged by river flood\", \"core\": [\"bank\", \"flood\"], \"related\": [\"river\", \"flooded\", \"water damage\", \"branch\", \"vault\", \"flood waters\"]}], \"must\": [\"the bank is a financial institution or the river bank of a river, as the story uses it\", \"describes the effect of the flood on the bank\"], \"context\": [\"river\", \"flooded\"], \"unverifiable\": [\"the user's location\", \"when the user last visited the bank\"]}"
+  },
+  "ae118fb17613554d165d": {
+   "role": "analyze",
+   "asked": "Which company is changing its chief executive, and which one is buying back its own shares?",
+   "reply": "{\"concepts\": [{\"name\": \"chief executive change\", \"core\": [\"chief executive\"], \"related\": [\"ceo\", \"chief executive officer\", \"step down\", \"succeed\", \"appointed\", \"leadership change\"]}, {\"name\": \"share buyback\", \"core\": [\"share buyback\", \"buy back shares\"], \"related\": [\"repurchase\", \"buyback\", \"repurchase programme\", \"treasury shares\", \"repurchase its stock\"]}], \"must\": [\"a company replacing, appointing or losing its chief executive\", \"a company repurchasing its own shares, not another firm's shares\"], \"context\": [], \"unverifiable\": []}"
+  },
+  "b49efc6873ad274b1373": {
+   "role": "analyze",
+   "asked": "Which story is about an ascent on foot, and which is about leaving the Earth's surface?",
+   "reply": "{\"concepts\": [{\"name\": \"ascent on foot\", \"core\": [\"climb\", \"ascent\"], \"related\": [\"hiking\", \"trek\", \"summit\", \"mountaineering\", \"scaling\", \"walking uphill\"]}, {\"name\": \"leaving the earth's surface\", \"core\": [\"spaceflight\", \"launch\"], \"related\": [\"rocket\", \"orbit\", \"liftoff\", \"blast off\", \"outer space\", \"escape velocity\"]}], \"must\": [\"ascent made by walking or climbing on foot\", \"departure from the ground into air or space\"], \"context\": [], \"unverifiable\": []}"
+  },
+  "bd67a152adef2cfb48ea": {
+   "role": "score",
+   "asked": "Question: Which firm was hit by hackers, and which firm settled a patent fight?\n\nSubject to judge the passages against: ",
+   "reply": "{\"cyber_incident\": 3, \"bank_rates\": 0, \"bread\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"frog_log\": 0, \"frog_still\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"litigation\": 0, \"lost_dog\": 0, \"mountain_hike\": 0, \"regional_bank\": 0, \"rocket\": 0, \"stock_jump\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0}"
+  },
+  "d533f336850630c7a717": {
+   "role": "analyze",
+   "asked": "hello i want to know who is baking breal around here?",
+   "reply": "{\"concepts\": [{\"name\": \"bread baking\", \"core\": [\"bread\", \"baking\"], \"related\": [\"baker\", \"bakery\", \"loaves\", \"bakehouse\", \"sourdough\", \"baked goods\"]}], \"must\": [\"someone or somewhere that bakes bread\"], \"context\": [\"local\"], \"unverifiable\": [\"the user's current area\"]}"
+  },
+  "d819e2a6921abfae06a1": {
+   "role": "score",
+   "asked": "Question: Which companies reported that their profits fell?\n\nSubject to judge the passages against: companies reporting ",
+   "reply": "{\"buyback\": 0, \"guidance_cut\": 2, \"litigation\": 1, \"regional_bank\": 3, \"rocket\": 0, \"stock_jump\": 0, \"supply_chain\": 3, \"tariff_hurt\": 3, \"tariff_margin\": 1, \"village_customs\": 0}"
+  },
+  "e3b53e96b6ac023511ae": {
+   "role": "score",
+   "asked": "Question: an amphibian that kept perfectly still because of a predator, and a firm that got money back from customs\n\nSub",
+   "reply": "{\"frog_still\": 3, \"frog_log\": 1, \"river_bank\": 1, \"frog_log_dummy\": 0, \"bank_rates\": 0, \"buyback\": 0, \"cyber_incident\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"lost_dog\": 0, \"regional_bank\": 0, \"stock_jump\": 0, \"supply_chain\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "e3e549ef9d1d04f2c235": {
+   "role": "score",
+   "asked": "Question: Which company is changing its chief executive, and which one is buying back its own shares?\n\nSubject to judge ",
+   "reply": "{\"bread\": 0, \"buyback\": 3, \"ceo_departure\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"guidance_cut\": 0, \"litigation\": 0, \"lost_dog\": 0, \"regional_bank\": 0, \"rocket\": 0, \"stock_jump\": 0, \"supply_chain\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0, \"village_customs\": 0}"
+  },
+  "effcafc9eb0061af8be8": {
+   "role": "score",
+   "asked": "Question: Which firm was hit by hackers, and which firm settled a patent fight?\n\nSubject to judge the passages against: ",
+   "reply": "{\"bank_rates\": 0, \"bread\": 0, \"buyback\": 0, \"ceo_departure\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"guidance_cut\": 0, \"job_duties\": 0, \"litigation\": 3, \"lost_dog\": 0, \"mountain_hike\": 0, \"regional_bank\": 0, \"rocket\": 0, \"stock_jump\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0}"
+  },
+  "f252cbdf85737c7f3c3e": {
+   "role": "score",
+   "asked": "Question: What happened to the bank when the river flooded?\n\nSubject to judge the passages against: bank damaged by rive",
+   "reply": "{\"river_bank\": 2, \"bank_rates\": 1, \"regional_bank\": 1, \"buyback\": 0, \"cyber_incident\": 0, \"frog_log\": 0, \"frog_still\": 0, \"litigation\": 0, \"lost_dog\": 0, \"mountain_hike\": 0, \"rocket\": 0, \"tariff_hurt\": 0, \"tariff_margin\": 0}"
+  },
+  "f971acf944c71b33a903": {
+   "role": "analyze",
+   "asked": "Which store chain got a big stock-market boost, and which furniture seller warned about weak demand?",
+   "reply": "{\"concepts\": [{\"name\": \"store chain with stock-market boost\", \"core\": [\"store chain\", \"retail chain\"], \"related\": [\"retailer\", \"shares\", \"stock jump\", \"rally\", \"surged\", \"stock price\"]}, {\"name\": \"furniture seller warning about weak demand\", \"core\": [\"furniture seller\", \"furniture retailer\"], \"related\": [\"furniture maker\", \"home furnishings\", \"warned\", \"weak demand\", \"outlook\", \"profit warning\"]}], \"must\": [\"stock price rose sharply, not fell\", \"warning about weak demand, not about profits alone\"], \"context\": [], \"unverifiable\": []}"
+  },
+  "fb415408aa701fe3c55d": {
+   "role": "analyze",
+   "asked": "Which firm was hit by hackers, and which firm settled a patent fight?",
+   "reply": "{\"concepts\": [{\"name\": \"firm hit by hackers\", \"core\": [\"hackers\", \"hacked\"], \"related\": [\"breach\", \"cyberattack\", \"ransomware\", \"data breach\", \"intrusion\", \"hacking\"]}, {\"name\": \"firm that settled a patent fight\", \"core\": [\"patent\"], \"related\": [\"patent dispute\", \"patent lawsuit\", \"infringement\", \"settlement\", \"settled\", \"litigation\"]}], \"must\": [\"firm was the victim of a hack, not the hacker\", \"firm reached a settlement in a patent case, not merely filed one\"], \"context\": [], \"unverifiable\": []}"
+  },
+  "fe97759bc43ae974213a": {
+   "role": "analyze",
+   "asked": "What did the museum guard have to do each night?",
+   "reply": "{\"concepts\": [{\"name\": \"museum guard's nightly duties\", \"core\": [\"museum guard\", \"night duties\"], \"related\": [\"security guard\", \"night shift\", \"patrol\", \"rounds\", \"watchman\", \"museum night\"]}], \"must\": [\"describes tasks the guard performed at night\"], \"context\": [\"museum\", \"night\"], \"unverifiable\": []}"
+  }
+ }
+}

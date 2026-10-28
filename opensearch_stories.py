@@ -27,7 +27,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import requests
 
-from retrieval import embed, rrf, run_selected, story_level
+from retrieval import TIER_WEIGHT, Query, Searchable, embed, rrf, run_selected, story_level
 
 URL = os.environ.get("OPENSEARCH_URL", "http://localhost:9200")
 
@@ -153,9 +153,16 @@ def _search(index: str, body: dict) -> List[Dict]:
     return [{"id": h["_id"], **h["_source"], "score": h["_score"]} for h in hits]
 
 
-def bm25(index: str, field: str, text: str, size: int = 10, kind: Optional[str] = None) -> List[Dict]:
-    query = {"bool": {"must": [{"match": {field: text}}], "filter": [{"term": {"kind": kind}}] if kind else []}}
-    return _search(index, {"size": size, "query": query})
+def bm25(index: str, field: str, query: Searchable, size: int = 10, kind: Optional[str] = None) -> List[Dict]:
+    """BM25 on `field`. A plain string is one flat set of words; a Query gives one match clause per tier, boosted by TIER_WEIGHT, so a story
+    that has the core words outscores one that only has the side words."""
+    filters = [{"term": {"kind": kind}}] if kind else []
+    if isinstance(query, Query):
+        should = [{"match": {field: {"query": " ".join(words), "boost": TIER_WEIGHT[tier]}}} for tier, words in query.tiers()]
+        body = {"bool": {"should": should, "minimum_should_match": 1, "filter": filters}}      # with a filter present the default would be 0
+    else:
+        body = {"bool": {"must": [{"match": {field: query}}], "filter": filters}}
+    return _search(index, {"size": size, "query": body})
 
 
 def knn(index: str, vector: List[float], size: int = 10, kind: Optional[str] = None) -> List[Dict]:
@@ -165,7 +172,7 @@ def knn(index: str, vector: List[float], size: int = 10, kind: Optional[str] = N
     return _search(index, {"size": size, "query": {"knn": {"embedding": inner}}})
 
 
-def run_arms(index: str, query: str, embedder=None, kind: Optional[str] = None, size: int = 10,
+def run_arms(index: str, query: Searchable, embedder=None, kind: Optional[str] = None, size: int = 10,
              only: Optional[Sequence[str]] = None) -> Dict[str, List[Dict]]:
     """What each search arm returns for `query` (every arm this index and embedder allow, or just those named in `only`; see retrieval.run_selected)."""
     builders: Dict[str, Callable] = {
@@ -174,7 +181,7 @@ def run_arms(index: str, query: str, embedder=None, kind: Optional[str] = None, 
         "syn": lambda get: bm25(index, "text.syn", query, size, kind),
     }
     if embedder:
-        builders["dense"] = lambda get: knn(index, embed(embedder, [query])[0], size, kind)
+        builders["dense"] = lambda get: knn(index, embed(embedder, [query.vector_text() if isinstance(query, Query) else query])[0], size, kind)
         builders["hybrid"] = lambda get: rrf([get("syn"), get("dense")])
     if kind is None:
         builders["story"] = lambda get: story_level(get("hybrid") if embedder else rrf([get("syn")]))

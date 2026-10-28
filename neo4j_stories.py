@@ -43,7 +43,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from neo4j import GraphDatabase
 from nltk.stem.snowball import SnowballStemmer
 
-from retrieval import embed, rrf, run_selected, story_level
+from retrieval import TIER_WEIGHT, Query, Searchable, embed, rrf, run_selected, story_level
 
 # the driver reports every statement that mentions a label the database does not have yet (normal before the first load)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
@@ -70,10 +70,20 @@ _WORD = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*")
 _POSSESSIVE = re.compile(r"['\u2019]s$")
 
 
+def token_spans(text: str) -> List[Tuple[str, str, int, int]]:
+    """[(stem, surface word, start, end)] without stop words; start and end are where the word stands in `text`.
+    "watchman's" is "watchman" and "naïve" stays whole, as in Lucene's English analyzer."""
+    out = []
+    for m in _WORD.finditer(text):
+        word = _POSSESSIVE.sub("", m.group().lower())
+        if word not in STOP:
+            out.append((_STEMMER.stem(word), word, m.start(), m.end()))
+    return out
+
+
 def tokens(text: str) -> List[Tuple[str, str]]:
-    """[(stem, surface word)] without stop words. "watchman's" is "watchman" and "naïve" stays whole, as in Lucene's English analyzer."""
-    words = (_POSSESSIVE.sub("", w) for w in _WORD.findall(text.lower()))
-    return [(_STEMMER.stem(w), w) for w in words if w not in STOP]
+    """[(stem, surface word)] without stop words."""
+    return [(stem, word) for stem, word, _, _ in token_spans(text)]
 
 
 # ---------------------------------------------------------------------------
@@ -289,17 +299,38 @@ class StoryGraph:
             return []
         return _run(self.driver, _BM25, {"weights": rows, "k": size, "k1": K1, "b": B, "avglen": self.avg_len})
 
+    def _known(self, stems: Sequence[str]) -> set:
+        """The given stems that exist in the graph (a word the corpus has never seen cannot be expanded by CO edges)."""
+        if not stems:
+            return set()
+        return {r["stem"] for r in _run(self.driver, "MATCH (t:StoryTerm) WHERE t.stem IN $stems RETURN t.stem AS stem", {"stems": list(stems)})}
+
     def query_stems(self, text: str) -> List[str]:
-        """Query stems that exist in the graph (a word the corpus has never seen cannot be expanded by CO edges)."""
         stems = sorted({stem for stem, _ in tokens(text)})
-        known = {r["stem"] for r in _run(self.driver, "MATCH (t:StoryTerm) WHERE t.stem IN $stems RETURN t.stem AS stem", {"stems": stems})}
+        known = self._known(stems)
         return [s for s in stems if s in known]
 
+    def _weights(self, query: Searchable) -> Tuple[Dict[str, float], List[str]]:
+        """({stem: weight} for the query's words the graph knows, the stems of the words that name the subject). A plain string weighs every
+        word 1.0 and all of them name the subject. With tiers a word weighs what its most important tier says (TIER_WEIGHT) and only the
+        core words name the subject, so only they are expanded."""
+        if not isinstance(query, Query):
+            stems = self.query_stems(query)
+            return {s: 1.0 for s in stems}, stems
+        per_tier = [(tier, sorted({stem for stem, _ in tokens(" ".join(words))})) for tier, words in query.tiers()]
+        known = self._known(sorted({s for _, stems in per_tier for s in stems}))
+        weights: Dict[str, float] = {}
+        for tier, stems in per_tier:
+            for s in stems:
+                if s in known:
+                    weights[s] = max(weights.get(s, 0.0), TIER_WEIGHT[tier])
+        return weights, [s for tier, stems in per_tier if tier == "core" for s in stems if s in known]
+
     def _expanded(self, base: Dict[str, float], extra: Dict[str, float]) -> Dict[str, float]:
-        """base weighs 1.0 per term; the extras share ALPHA x len(base) in proportion to their strength."""
+        """The extras share ALPHA x the total weight of `base` (len(base) when every word weighs 1.0), in proportion to their strength."""
         extra = {s: v for s, v in extra.items() if s not in base}
         total = sum(extra.values())
-        return {**base, **{s: ALPHA * len(base) * v / total for s, v in extra.items()}}
+        return {**base, **{s: ALPHA * sum(base.values()) * v / total for s, v in extra.items()}}
 
     # --- expansions (also used to explain a result) ---------------------------
     def co_expansion(self, text: str, stems: Optional[List[str]] = None) -> List[dict]:
@@ -326,29 +357,32 @@ class StoryGraph:
         return sorted(out.values(), key=lambda r: (-r["strength"], r["word"]))
 
     # --- arms ------------------------------------------------------------------
-    def ft(self, text: str, size: int = 10) -> List[Dict]:
-        query = " ".join(word for _, word in tokens(text))   # plain words only: nothing that Lucene's query syntax would read as an operator
+    def ft(self, query: Searchable, size: int = 10) -> List[Dict]:
+        if isinstance(query, Query):   # Lucene's own boost syntax: word^0.33
+            query = " ".join(f"{word}^{TIER_WEIGHT[tier]}" for tier, words in query.tiers() for _, word in tokens(" ".join(words)))
+        else:
+            query = " ".join(word for _, word in tokens(query))   # plain words only: nothing that Lucene's query syntax would read as an operator
         if not query:
             return []
         return _run(self.driver, f"MATCH (node:StoryVersion) SEARCH node IN (FULLTEXT INDEX story_ft FOR $q LIMIT $k) SCORE AS score RETURN {_COLUMNS}",
                     {"q": query, "k": size})
 
-    def vec(self, text: str, size: int = 10) -> List[Dict]:
+    def vec(self, query: Searchable, size: int = 10) -> List[Dict]:
+        text = query.vector_text() if isinstance(query, Query) else query
         return _run(self.driver, f"MATCH (node:StoryVersion) SEARCH node IN (VECTOR INDEX story_vec FOR $vec LIMIT $k) SCORE AS score RETURN {_COLUMNS}",
                     {"k": size, "vec": embed(self.embedder, [text])[0]})
 
-    def co(self, text: str, size: int = 10) -> List[Dict]:
-        stems = self.query_stems(text)
-        base = {s: 1.0 for s in stems}
-        extra = {r["stem"]: r["strength"] for r in self.co_expansion(text, stems)}
+    def co(self, query: Searchable, size: int = 10) -> List[Dict]:
+        base, subject = self._weights(query)
+        extra = {r["stem"]: r["strength"] for r in self.co_expansion("", subject)}
         return self._bm25(self._expanded(base, extra) if extra else base, size)
 
-    def term(self, text: str, size: int = 10) -> List[Dict]:
-        base = {s: 1.0 for s in self.query_stems(text)}
-        extra = {r["stem"]: r["strength"] for r in self.term_expansion(text)}
+    def term(self, query: Searchable, size: int = 10) -> List[Dict]:
+        base, _ = self._weights(query)
+        extra = {r["stem"]: r["strength"] for r in self.term_expansion(query.words(("core",)) if isinstance(query, Query) else query)}
         return self._bm25(self._expanded(base, extra) if extra and base else (extra or base), size)
 
-    def arms(self, text: str, size: int = 10, only: Optional[Sequence[str]] = None) -> Dict[str, List[Dict]]:
+    def arms(self, text: Searchable, size: int = 10, only: Optional[Sequence[str]] = None) -> Dict[str, List[Dict]]:
         """What each search arm returns for `text` (every arm this graph allows, or just those named in `only`; see retrieval.run_selected)."""
         builders: Dict[str, Callable] = {"n_ft": lambda get: self.ft(text, size), "n_co": lambda get: self.co(text, size)}
         if self.prep.has_vectors:

@@ -8,7 +8,8 @@ Every search arm returns ranked rows shaped {id, topic, version, kind, score}; e
 from __future__ import annotations
 
 import os
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 MODEL = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
@@ -26,6 +27,38 @@ def load_embedder(model: str = MODEL):
 
 def embed(embedder, texts: Sequence[str]) -> List[List[float]]:
     return embedder.encode(list(texts), normalize_embeddings=True).tolist()
+
+
+# ---------------------------------------------------------------------------
+# A query whose words are not all equally important
+# ---------------------------------------------------------------------------
+TIER_WEIGHT = {"core": 1.0, "related": 0.33, "context": 0.07}   # how much a word counts, by how much it matters to the question
+
+
+@dataclass(frozen=True)
+class Query:
+    """What the search arms are given when the words of a question are split by importance (see TIER_WEIGHT): `core` names the subject,
+    `related` are close variants of it, `context` only narrows it. `embed` is the text the vector arms turn into a vector; by default the
+    core words, because a vector of the bare subject separates the right stories better than one of every word in the question.
+    The arms also take a plain string, which they treat as one flat set of equally important words."""
+    core: Tuple[str, ...]
+    related: Tuple[str, ...] = ()
+    context: Tuple[str, ...] = ()
+    embed: str = ""
+
+    def tiers(self) -> List[Tuple[str, Tuple[str, ...]]]:
+        """[(tier name, words)] for the tiers that have words, most important first."""
+        return [(name, words) for name, words in (("core", self.core), ("related", self.related), ("context", self.context)) if words]
+
+    def vector_text(self) -> str:
+        return self.embed or " ".join(self.core)
+
+    def words(self, tiers: Sequence[str] = ("core", "related", "context")) -> str:
+        """The words of the given tiers as one string."""
+        return " ".join(" ".join(words) for name, words in self.tiers() if name in tiers)
+
+
+Searchable = Union[str, Query]
 
 
 # ---------------------------------------------------------------------------

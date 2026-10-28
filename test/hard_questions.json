@@ -1,0 +1,146 @@
+{
+  "about": "Questions that a plain one-search lookup is likely to answer badly and a system that understands the question should answer well. Judged by hand against stories/. 'relevant' = the stories a good answer must be built from; 'acceptable' = defensible extras, neither rewarded nor penalised; every other story shown counts as noise. The questions were written before any LLM reply was recorded. h13-h15 are held out: written before the concept-priority design was run on anything, and never used to adjust it. h08 (abstraction, overlaps h01) and h10 (physical vs political cause, overlaps h04) were dropped to fit the API budget; they were chosen for their overlap, before the concept-priority design was run on them.",
+  "questions": [
+    {
+      "id": "h01",
+      "kind": "typo and a condition no passage can meet",
+      "question": "hello i want to know who is baking breal around here?",
+      "relevant": [
+        "bread",
+        "village_customs"
+      ],
+      "acceptable": [],
+      "note": "'breal' matches nothing by keyword; 'around here' is not in any story; bread is baked in two stories (one of them a harvest-festival ritual)."
+    },
+    {
+      "id": "h02",
+      "kind": "two topics, vocabulary gap on both",
+      "question": "an amphibian that kept perfectly still because of a predator, and a firm that got money back from customs",
+      "relevant": [
+        "frog_still",
+        "tariff_margin"
+      ],
+      "acceptable": [],
+      "note": "Two unrelated subjects in one sentence; neither uses the stories' own words in the original (frog / tariff refunds)."
+    },
+    {
+      "id": "h03",
+      "kind": "wrong-polarity trap",
+      "question": "Which company benefited from tariffs instead of being hurt by them?",
+      "relevant": [
+        "tariff_margin"
+      ],
+      "acceptable": [],
+      "note": "tariff_hurt is about the same subject with the opposite outcome."
+    },
+    {
+      "id": "h04",
+      "kind": "right-subject, wrong-cause traps",
+      "question": "Which company's profit margin was squeezed by new tariffs?",
+      "relevant": [
+        "tariff_hurt"
+      ],
+      "acceptable": [],
+      "note": "supply_chain also has a squeezed margin (freight, not tariffs); tariff_margin has tariffs and a margin that rose."
+    },
+    {
+      "id": "h05",
+      "kind": "abstract category over several stories",
+      "question": "Which companies reported that their profits fell?",
+      "relevant": [
+        "tariff_hurt",
+        "supply_chain",
+        "regional_bank"
+      ],
+      "acceptable": [
+        "guidance_cut"
+      ],
+      "note": "Net income fell in all three; guidance_cut lowered its outlook (acceptable); tariff_margin and stock_jump are the opposite."
+    },
+    {
+      "id": "h06",
+      "kind": "ambiguous word",
+      "question": "What happened to the bank when the river flooded?",
+      "relevant": [
+        "river_bank"
+      ],
+      "acceptable": [],
+      "note": "'bank' is also the topic of bank_rates and regional_bank."
+    },
+    {
+      "id": "h07",
+      "kind": "vocabulary gap and an ambiguous word",
+      "question": "What did the museum guard have to do each night?",
+      "relevant": [
+        "job_duties"
+      ],
+      "acceptable": [],
+      "note": "The story says watchman and duties; 'duties' is also the topic of the tariff stories."
+    },
+    {
+      "id": "h09",
+      "kind": "two topics in the same field",
+      "question": "Which company is changing its chief executive, and which one is buying back its own shares?",
+      "relevant": [
+        "ceo_departure",
+        "buyback"
+      ],
+      "acceptable": [],
+      "note": "Both are corporate announcements; guidance_cut and litigation also quote executives."
+    },
+    {
+      "id": "h11",
+      "kind": "two topics, vocabulary gap on both",
+      "question": "Which firm was hit by hackers, and which firm settled a patent fight?",
+      "relevant": [
+        "cyber_incident",
+        "litigation"
+      ],
+      "acceptable": [],
+      "note": "The stories say 'unauthorized access' and 'patent infringement lawsuit'."
+    },
+    {
+      "id": "h12",
+      "kind": "two topics, one of them ambiguous",
+      "question": "Which central bank decision made borrowing more expensive, and which lender was worried about bad loans?",
+      "relevant": [
+        "bank_rates",
+        "regional_bank"
+      ],
+      "acceptable": [],
+      "note": "river_bank is the polysemy distractor; the stories say 'raised interest rates' and 'provision for credit losses'."
+    },
+    {
+      "id": "h13",
+      "kind": "held out: two topics, a same-field trap",
+      "question": "Which store chain got a big stock-market boost, and which furniture seller warned about weak demand?",
+      "relevant": [
+        "stock_jump",
+        "guidance_cut"
+      ],
+      "acceptable": [],
+      "note": "supply_chain is also a furniture seller (Oakridge) but its trouble is freight, not demand."
+    },
+    {
+      "id": "h14",
+      "kind": "held out: two topics, vocabulary gap on both",
+      "question": "Which story is about an ascent on foot, and which is about leaving the Earth's surface?",
+      "relevant": [
+        "mountain_hike",
+        "rocket"
+      ],
+      "acceptable": [],
+      "note": "The stories say hiked up a trail and lifted off to orbit."
+    },
+    {
+      "id": "h15",
+      "kind": "held out: several typos",
+      "question": "wat happend to the sharez after the retailer had a gud quater?",
+      "relevant": [
+        "stock_jump"
+      ],
+      "acceptable": [],
+      "note": "tariff_margin also has a good quarter, buyback and ceo_departure are about shares."
+    }
+  ]
+}

@@ -189,3 +189,44 @@ def test_the_hybrid_and_story_views_still_answer_every_query(index, vectors):
     for arm in ("hybrid", "story"):
         board = scoreboard(index, QUERIES, vectors)
         assert board[arm]["hit3"] == board[arm]["n"], arm
+
+
+# --------------------------------------------------------------------------- queries whose words differ in importance
+def test_a_query_with_tiers_sends_one_boosted_clause_per_tier_and_requires_at_least_one(monkeypatch):
+    sent = []
+    monkeypatch.setattr(os_s, "call", lambda method, path, body=None, ndjson=None: sent.append(body) or {"hits": {"hits": []}})
+    os_s.bm25("stories", "text.syn", retrieval.Query(core=("bread", "bake"), context=("nearby",)), 5, kind="original")
+    clauses = sent[0]["query"]["bool"]
+    assert clauses["should"] == [{"match": {"text.syn": {"query": "bread bake", "boost": retrieval.TIER_WEIGHT["core"]}}},
+                                 {"match": {"text.syn": {"query": "nearby", "boost": retrieval.TIER_WEIGHT["context"]}}}]       # no empty "related" clause
+    assert clauses["minimum_should_match"] == 1 and clauses["filter"] == [{"term": {"kind": "original"}}] and "must" not in clauses
+
+
+def test_a_plain_string_is_still_searched_as_one_required_match(monkeypatch):
+    sent = []
+    monkeypatch.setattr(os_s, "call", lambda method, path, body=None, ndjson=None: sent.append(body) or {"hits": {"hits": []}})
+    os_s.bm25("stories", "text.syn", "bread loaf", 5)
+    assert sent[0]["query"] == {"bool": {"must": [{"match": {"text.syn": "bread loaf"}}], "filter": []}}
+
+
+def test_the_vector_arm_embeds_the_core_words_of_a_query_not_every_word(monkeypatch):
+    seen = []
+
+    class Model:
+        def encode(self, texts, normalize_embeddings=True):
+            seen.extend(texts)
+            import numpy
+            return numpy.zeros((len(texts), 3))
+    monkeypatch.setattr(os_s, "call", lambda method, path, body=None, ndjson=None: {"hits": {"hits": []}})
+    os_s.run_arms("stories", retrieval.Query(core=("bread",), related=("loaf",), context=("nearby",)), Model(), only=["dense"])
+    os_s.run_arms("stories", "who bakes bread?", Model(), only=["dense"])
+    assert seen == ["bread", "who bakes bread?"]
+
+
+def test_core_words_outweigh_side_words_when_the_keyword_side_ranks_stories(index):
+    """The hand-tiered version of a real question: the story about bread must come first, not the one that merely mentions a bakery and a shop."""
+    flat = os_s.run_arms(index, "bakery bread baker local nearby fresh bakeries artisan bread shop", None, only=["syn"])["syn"]
+    tiered = os_s.run_arms(index, retrieval.Query(core=("bread", "bake", "baker", "bakery"), related=("loaf", "dough", "oven", "artisan", "fresh"),
+                                                  context=("local", "nearby", "shop")), None, only=["syn"])["syn"]
+    assert retrieval.story_level(flat)[0]["topic"] != "bread"          # the flat string lets the side words win
+    assert retrieval.story_level(tiered)[0]["topic"] == "bread"

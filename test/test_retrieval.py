@@ -71,3 +71,19 @@ def test_run_selected_refuses_an_arm_that_does_not_exist_before_running_anything
     with pytest.raises(ValueError, match="no such search arm: nope"):
         retrieval.run_selected({"a": lambda get: ran.append("a") or []}, ["a", "nope"])
     assert ran == []
+
+
+def test_a_query_lists_its_tiers_most_important_first_and_skips_empty_ones():
+    q = retrieval.Query(core=("bread", "bake"), context=("nearby",))
+    assert q.tiers() == [("core", ("bread", "bake")), ("context", ("nearby",))]
+    assert q.words() == "bread bake nearby" and q.words(("core", "related")) == "bread bake"
+
+
+def test_the_vectors_embed_the_core_words_unless_told_otherwise():
+    assert retrieval.Query(core=("bread", "bake"), related=("loaf",)).vector_text() == "bread bake"
+    assert retrieval.Query(core=("bread",), embed="who bakes bread?").vector_text() == "who bakes bread?"
+
+
+def test_the_tiers_count_less_the_less_they_matter():
+    w = retrieval.TIER_WEIGHT
+    assert w["core"] > w["related"] > w["context"] > 0

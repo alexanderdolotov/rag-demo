@@ -3,18 +3,21 @@ Type a question and see what OpenSearch and Neo4j each return for it (top 5, ran
 each database's own top 5, so you can feel how the two behave side by side.
 
     echo 'OPENROUTER_API_KEY=...' > .env       # git-ignored; or export it. Never printed
-    python ask_stories.py                      # plain run: the question goes unchanged to both databases
-    python ask_stories.py --no-llm             # retrieval only, no key needed
-    python ask_stories.py --rewrite            # + the LLM turns the question into a keyword query first (same text to both)
-    python ask_stories.py --rerank             # + the LLM re-orders each database's 10 candidates
-    python ask_stories.py --judge              # + a third call says which answer is better supported (a hint, not a measurement)
+    python ask_stories.py                      # the LLM analyses the question (concepts by priority, conditions a passage must meet), the databases
+                                               # are searched once per concept, the LLM scores every candidate 0-3 and each database's answer is
+                                               # written from what scored well
+    python ask_stories.py --no-rewrite         # ... without the analysis: the question is searched as typed
+    python ask_stories.py --no-rerank          # ... without the scoring: the databases' own order
+    python ask_stories.py --no-llm             # retrieval only, no key needed (one search with the question as typed)
+    python ask_stories.py --judge              # + a last call says which answer is better supported (a hint, not a measurement)
     python ask_stories.py --provider ollama    # local model instead of OpenRouter (default model qwen3:8b)
     python ask_stories.py --debug              # + the exact requests sent to each database (OpenSearch JSON, Neo4j Cypher + parameters)
 
 The corpus is the story files in stories/, loaded once into both databases by data_load.py (this script refuses to run if
 either database no longer matches the files). Each database ranks versions (originals and rewrites); they are collapsed to one
-row per story and the text shown, and given to the LLM, is always the story's original. Scores are each engine's own and cannot
-be compared across the two databases.
+row per story and the text given to the LLM is always the story's original. Beside each result you see the sentence where the words
+of your question occur (cut around the first of them when it is long), or the start of the story when none does, as with a match made
+by the vectors alone. Scores are each engine's own and cannot be compared across the two databases.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import requests
 
@@ -39,13 +42,17 @@ import corpus  # noqa: E402
 import data_load  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
+import pipeline  # noqa: E402
 import retrieval  # noqa: E402
+from intent import ANALYZE_SYSTEM, Intent, flat_intent, parse_intent  # noqa: E402
+from retrieval import Query, Searchable  # noqa: E402
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODELS = {"openrouter": "anthropic/claude-haiku-5.5", "ollama": "qwen3:8b"}
 REQUEST_TIMEOUT = 120
 ENV_FILE = Path(__file__).resolve().parent / ".env"   # git-ignored; holds OPENROUTER_API_KEY
-POOL = 10      # stories each database hands to the optional re-ranker
+POOL = 10      # stories each database hands on from one search (the most it can show)
+DBS = ("OpenSearch", "Neo4j")
 SEARCH_SIZE = 30   # versions requested from each database before they are collapsed to stories
 
 OS_ARMS = {"plain": "raw words", "stem": "stemmed keywords", "syn": "keywords + synonym list", "dense": "vectors",
@@ -54,14 +61,11 @@ NEO_ARMS = {"n_ft": "stemmed keywords", "n_vec": "vectors", "n_co": "word links 
             "n_term": "nearest words by embedding", "n_hyb": "word links, nearest words and vectors, merged"}
 
 SAMPLES = ["Is the company being hurt by import duties?", "toad resting at the edge of a stream", "did the firm get money back from customs authorities",
-           "what were the night watchman's responsibilities?", "did the company suffer a cyberattack?", "something took off and went into space"]
+           "what were the night watchman's responsibilities?", "did the company suffer a cyberattack?", "something took off and went into space",
+           "who bakes bread, and what do import duties do to margins?"]
 
 ANSWER_SYSTEM = ("You answer questions using only the numbered passages you are given. Cite the passages you use like [1] or [2][3]. "
                  "If the passages do not answer the question, say so plainly instead of guessing. Keep it to 2-4 sentences.")
-REWRITE_SYSTEM = ("Turn the user's question into a short search query of 6-12 keywords for a text search engine: keep the key terms and add close "
-                  "synonyms and other ways the idea could be worded. Reply with the keywords only, separated by spaces, no explanation.")
-RERANK_SYSTEM = ("You rank passages by how directly they answer the question. Reply with a JSON list of the passage numbers, best first, "
-                 "for example [3,1,2]. Include every number once. No other text.")
 JUDGE_SYSTEM = ("You compare two answers to the same question. Each answer was written only from its own numbered passages. Say which answer is "
                 "better supported by its passages and more useful: A, B or tie, then give one or two sentences of reason.")
 
@@ -122,38 +126,88 @@ def collapse(hits: Sequence[Dict], originals: Dict[str, str], pool: int = POOL) 
     return [dict(r, text=originals[r["topic"]], native=i) for i, r in enumerate(rows, start=1)]
 
 
+SNIPPET_WIDTH = 92   # characters of story text shown beside each result
+# Words of a question that say nothing about the topic. The engines' own stop list is short ("what" and "were" are not on it), but a sentence
+# that merely contains "what" is not the evidence for a match, so these are ignored when looking for the sentence to show.
+QUESTION_FILLER = frozenset("""what whats who whom whose which when where why how do does did done doing have has had having been being were am
+                               would could should about from i me my we us our you your he him his she her them its also than so just very""".split())
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9"\u201c(])')
+
+
+def sentence_spans(text: str) -> List[Tuple[int, int]]:
+    """(start, end) of each sentence of `text`."""
+    spans, start = [], 0
+    for m in _SENTENCE_END.finditer(text):
+        spans.append((start, m.start()))
+        start = m.end()
+    return spans + [(start, len(text))]
+
+
+def excerpt(sentence: str, hit: Tuple[int, int], width: int = SNIPPET_WIDTH) -> str:
+    """The whole `sentence` if it fits in `width` characters, else the stretch of it around `hit` (start, end of the matched word, or of the
+    stretch holding several): centred on it where the sentence allows, cut between words but never through the hit, and marked with ...
+    where text was left out."""
+    if len(sentence) <= width:
+        return sentence
+    room = width - 6                                              # space for a "..." on each side
+    start = max(0, min((hit[0] + hit[1]) // 2 - room // 2, len(sentence) - room))
+    end = min(len(sentence), start + room)
+    while 0 < start < hit[0] and sentence[start - 1] != " ":      # do not start or stop in the middle of a word
+        start += 1
+    while hit[1] < end < len(sentence) and sentence[end] != " ":
+        end -= 1
+    return ("..." if start > 0 else "") + sentence[start:end].strip() + ("..." if end < len(sentence) else "")
+
+
+def evidence(text: str, stems: Set[str], width: int = SNIPPET_WIDTH) -> Optional[str]:
+    """The sentence of `text` that holds the most different words of the query (the first such sentence on a tie), cut to `width` around
+    them; None when no query word occurs in `text`. A word counts when it has the same stem, so "duties" finds "duty". When the sentence is
+    cut, the window is centred on the stretch from the first to the last of the different query words if that fits, else on the first."""
+    text = " ".join(text.split())
+    best: Optional[Tuple[int, str, Tuple[int, int]]] = None
+    for start, end in sentence_spans(text):
+        sentence = text[start:end]
+        first: Dict[str, Tuple[int, int]] = {}
+        for stem, _, s, e in ns.token_spans(sentence):
+            if stem in stems:
+                first.setdefault(stem, (s, e))
+        if first and (best is None or len(first) > best[0]):
+            hits = sorted(first.values())
+            stretch = (hits[0][0], max(e for _, e in hits))
+            best = (len(first), sentence, stretch if stretch[1] - stretch[0] <= width - 6 else hits[0])
+    return excerpt(best[1], best[2], width) if best else None
+
+
+def add_snippets(rows: List[Dict], query: str, stores: "Stores") -> None:
+    """Give each row a `snippet`: the sentence where the query's words occur (leaving out QUESTION_FILLER), from the version that matched
+    (`via`), else from the original; `snippet_from` names that version. A row where no such word occurs (a match made by the vectors alone,
+    or by filler words) gets none."""
+    stems = {stem for stem, word in ns.tokens(query) if word not in QUESTION_FILLER}
+    for r in rows:
+        for version in dict.fromkeys([r["via"], "orig"]):
+            text = stores.texts.get(f"{r['topic']}:{version}") or (stores.originals[r["topic"]] if version == "orig" else "")
+            found = evidence(text, stems) if text and stems else None
+            if found:
+                r["snippet"], r["snippet_from"] = found, version
+                break
+
+
+def shown(r: Dict) -> str:
+    """The text beside a result: the sentence where the query's words occur (tagged with its version when that is not the one that matched),
+    or else the start of the story."""
+    if r.get("snippet"):
+        return (f"[{r['snippet_from']}] " if r["snippet_from"] != r["via"] else "") + r["snippet"]
+    return textwrap.shorten(r["text"], SNIPPET_WIDTH, placeholder="...")
+
+
 def numbered(rows: Sequence[Dict]) -> str:
     return "\n".join(f"[{i}] {r['text']}" for i, r in enumerate(rows, start=1))
 
 
-def answer_prompt(question: str, rows: Sequence[Dict]) -> str:
-    return f"Passages:\n{numbered(rows)}\n\nQuestion: {question}"
-
-
-def clean_rewrite(reply: str) -> str:
-    return re.sub(r"\s+", " ", reply.replace('"', " ")).strip()
-
-
-def parse_ranking(reply: str, n: int) -> Optional[List[int]]:
-    """The order of passages 1..n from the model's reply (any numbers it left out go last, in their old order); None if there is no usable list."""
-    match = re.search(r"\[[^\[\]]*\]", reply or "")
-    if not match:
-        return None
-    try:
-        numbers = json.loads(match.group(0))
-    except ValueError:
-        return None
-    order: List[int] = []
-    for x in numbers:
-        if type(x) is int and 1 <= x <= n and x not in order:
-            order.append(x)
-    return order + [i for i in range(1, n + 1) if i not in order] if order else None
-
-
-def rerank(question: str, rows: List[Dict], llm: LLM) -> Tuple[List[Dict], bool]:
-    """Rows re-ordered by the LLM (each keeps its native rank in `native`); the native order and False when the reply is unusable."""
-    order = parse_ranking(llm(RERANK_SYSTEM, f"Question: {question}\n\nPassages:\n{numbered(rows)}"), len(rows))
-    return ([rows[i - 1] for i in order], True) if order else (rows, False)
+def answer_prompt(question: str, rows: Sequence[Dict], constraints: Sequence[str] = ()) -> str:
+    asked = (f"\n\nThe question also asks for: {'; '.join(constraints)}. If the passages do not show whether that holds, say so."
+             if constraints else "")
+    return f"Passages:\n{numbered(rows)}{asked}\n\nQuestion: {question}"
 
 
 def overlap(first: Sequence[Dict], second: Sequence[Dict]) -> Dict[str, object]:
@@ -172,12 +226,12 @@ def judge_prompt(question: str, blocks: Sequence[Tuple[Sequence[Dict], str]]) ->
 # ---------------------------------------------------------------------------
 # What each database is asked (only the searches the chosen method needs)
 # ---------------------------------------------------------------------------
-def search_opensearch(stores: "Stores", query: str, arm: str, size: int = SEARCH_SIZE) -> List[Dict]:
+def search_opensearch(stores: "Stores", query: Searchable, arm: str, size: int = SEARCH_SIZE) -> List[Dict]:
     """Only the requests this one method needs (the other arms are not run)."""
     return os_s.run_arms(stores.index, query, stores.embedder, size=size, only=[arm])[arm]
 
 
-def search_neo4j(stores: "Stores", query: str, arm: str, size: int = SEARCH_SIZE) -> List[Dict]:
+def search_neo4j(stores: "Stores", query: Searchable, arm: str, size: int = SEARCH_SIZE) -> List[Dict]:
     return stores.graph.arms(query, size, only=[arm])[arm]
 
 
@@ -206,8 +260,12 @@ def shorten(value, max_items: int = 30):
 
 
 def format_trace(entries: Sequence[Tuple[str, str, object]], indent: str = "    ") -> List[str]:
-    lines = []
-    for i, (kind, text, payload) in enumerate(entries, start=1):
+    lines, i = [], 0
+    for kind, text, payload in entries:
+        if kind == "step":                                        # a header for the requests of one step, not a request itself
+            lines.append(f"{indent}-- {text} --")
+            continue
+        i += 1
         if kind == "http":
             lines.append(f"{indent}{i}. {text}")
             body = json.dumps(shorten(payload)) if payload is not None else ""
@@ -236,10 +294,10 @@ class Options:
     os_arm: str = "hybrid"
     neo_arm: str = "n_hyb"
     top: int = 5
-    rewrite: bool = False
-    rerank: bool = False
+    rewrite: bool = True       # the LLM analyses the question (concepts by priority, conditions) and the databases are searched with that
+    rerank: bool = True        # the LLM scores the candidates 0-3 per concept and the weak ones are dropped
     judge: bool = False
-    debug: bool = False
+    debug: bool = False        # (rewrite and rerank do nothing without an LLM)
 
 
 @dataclass
@@ -247,19 +305,20 @@ class Stores:
     index: str
     graph: "ns.StoryGraph"
     embedder: object
-    originals: Dict[str, str]                   # story id -> the original's text, what is shown and sent to the LLM
+    originals: Dict[str, str]                   # story id -> the original's text, what is sent to the LLM
+    texts: Dict[str, str] = field(default_factory=dict)   # "story:version" -> that version's text, where the matching sentence is looked for
 
 
 @dataclass
 class Result:
     question: str
-    query: str                                  # the text the databases were searched with
     note: str = ""
-    rows: Dict[str, List[Dict]] = field(default_factory=dict)       # database -> top rows
-    ms: Dict[str, float] = field(default_factory=dict)              # database -> search time
+    intent: Optional[Intent] = None             # how the LLM read the question, when it was asked to and the reply could be read
+    rows: Dict[str, List[Dict]] = field(default_factory=dict)       # database -> rows shown
+    ms: Dict[str, float] = field(default_factory=dict)              # database -> time spent searching
     trace: Dict[str, List[Tuple[str, str, object]]] = field(default_factory=dict)   # database -> requests sent (debug only)
     notes: Dict[str, List[str]] = field(default_factory=dict)       # database -> extra debug lines
-    reranked: Dict[str, bool] = field(default_factory=dict)         # database -> the LLM order was used
+    judged: Dict[str, bool] = field(default_factory=dict)           # database -> the LLM's scores were used (False: they could not be read)
     answers: Dict[str, str] = field(default_factory=dict)
     answer_s: Dict[str, float] = field(default_factory=dict)
     judge: str = ""
@@ -272,40 +331,59 @@ def _timed(fn: Callable, *args) -> Tuple[object, float]:
     return out, time.perf_counter() - t0
 
 
-def ask(question: str, stores: Stores, opts: Options, llm: Optional[LLM] = None, rng=random) -> Result:
-    """Search both databases and, when an LLM is given, answer from each one's top rows. The optional steps need the LLM."""
-    query, note = question, ""
-    if opts.rewrite and llm:
-        reply = llm(REWRITE_SYSTEM, question)
-        if failed(reply) or not clean_rewrite(reply):
-            note = f"rewrite failed, the question was sent as typed ({reply})"
-        else:
-            query = clean_rewrite(reply)
-    res = Result(question, query, note)
+def query_label(query: Query) -> str:
+    return " | ".join(f"{tier}: {', '.join(words)}" for tier, words in query.tiers())
 
-    searches = {"OpenSearch": lambda: search_opensearch(stores, query, opts.os_arm),
-                "Neo4j": lambda: search_neo4j(stores, query, opts.neo_arm)}
-    pool: Dict[str, List[Dict]] = {}
-    for name, search in searches.items():
+
+def _searcher(stores: Stores, opts: Options, res: Result) -> pipeline.Search:
+    """search(database, query) -> one row per story, with the sentence to show; adds the time and, with --debug, the requests to `res`."""
+    def search(db: str, query: Searchable) -> List[Dict]:
+        fn, arm = (search_opensearch, opts.os_arm) if db == "OpenSearch" else (search_neo4j, opts.neo_arm)
         sink: List[Tuple[str, str, object]] = []
         with capture(sink) if opts.debug else nullcontext():
-            hits, seconds = _timed(search)
-        pool[name], res.ms[name] = collapse(hits, stores.originals), seconds * 1000
+            hits, seconds = _timed(fn, stores, query, arm)
+        rows = collapse(hits, stores.originals)
+        add_snippets(rows, query.words(("core", "related")) if isinstance(query, Query) else query, stores)
+        res.ms[db] = res.ms.get(db, 0.0) + seconds * 1000
         if opts.debug:
-            res.trace[name] = sink
-    if opts.debug:
-        res.notes["OpenSearch"] = analysis_note(stores, query, opts.os_arm)       # an extra request, made after the timing
+            res.trace.setdefault(db, []).extend(([("step", query_label(query), None)] if isinstance(query, Query) else []) + sink)
+            if db == "OpenSearch":                                                        # an extra request, made after the timing
+                res.notes.setdefault(db, []).extend(analysis_note(stores, query.words() if isinstance(query, Query) else query, opts.os_arm))
+        return rows
+    return search
 
-    if opts.rerank and llm:
-        with ThreadPoolExecutor(2) as ex:
-            futures = {name: ex.submit(rerank, question, rows, llm) for name, rows in pool.items() if rows}
-        for name, future in futures.items():
-            pool[name], res.reranked[name] = future.result()
-    res.rows = {name: rows[:opts.top] for name, rows in pool.items()}
+
+def ask(question: str, stores: Stores, opts: Options, llm: Optional[LLM] = None, rng=random) -> Result:
+    """Search both databases and, when an LLM is given, answer from each one's rows. With an LLM the question is first analysed (opts.rewrite:
+    concepts by priority and conditions, see intent.py) and the candidates are scored afterwards (opts.rerank); see pipeline.py."""
+    res = Result(question)
+    search = _searcher(stores, opts, res)
+    intent = flat_intent(question)
+    if llm and opts.rewrite:
+        reply = llm(ANALYZE_SYSTEM, question)
+        if failed(reply):
+            res.note = f"rewrite failed, the question was searched as typed ({reply})"
+        else:
+            got = parse_intent(reply, question)
+            if got.understood:
+                res.intent = intent = got
+            else:
+                res.note = "the analysis could not be read, the question was searched as typed"
+
+    found = pipeline.search_all(question, intent, DBS, search)
+    scores = None
+    if llm and opts.rerank:
+        scores = pipeline.score_pool(llm, question, intent, found)
+        res.judged = {db: scores is not None for db in DBS}
+        if scores is None:
+            res.note = "; ".join(filter(None, [res.note, "the LLM's scores could not be read, so the databases' own order is shown"]))
+    res.rows = {db: pipeline.rank(intent.concepts, found[db], scores, opts.top) for db in DBS}
 
     if llm:
+        unverifiable = res.intent.unverifiable if res.intent else ()
         with ThreadPoolExecutor(2) as ex:   # a database that returned nothing gives the LLM nothing to answer from, so it is not asked
-            futures = {name: ex.submit(_timed, llm, ANSWER_SYSTEM, answer_prompt(question, rows)) for name, rows in res.rows.items() if rows}
+            futures = {name: ex.submit(_timed, llm, ANSWER_SYSTEM, answer_prompt(question, rows, unverifiable))
+                       for name, rows in res.rows.items() if rows}
         for name, future in futures.items():
             (res.answers[name], res.answer_s[name]) = future.result()
         if opts.judge and len(res.answers) == len(res.rows) and not any(failed(a) for a in res.answers.values()):
@@ -317,25 +395,44 @@ def ask(question: str, stores: Stores, opts: Options, llm: Optional[LLM] = None,
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
+def describe_intent(res: Result) -> List[str]:
+    intent = res.intent
+    if intent is None:
+        return []
+    lines = []
+    for i, c in enumerate(intent.concepts, start=1):
+        words = f"core: {', '.join(c.core)}" + (f" | related: {', '.join(c.related)}" if c.related else "")
+        head = "understood" if len(intent.concepts) == 1 else ("main concept" if i == 1 else f"concept {i}")
+        lines.append(f"{head}: {c.name}   [{words}]")
+    if intent.must:
+        lines.append(f"a passage must meet: {'; '.join(intent.must)}")
+    if intent.context:
+        lines.append(f"narrowing words (weak): {', '.join(intent.context)}")
+    if intent.unverifiable:
+        lines.append(f"no story can show: {'; '.join(intent.unverifiable)}")
+    return lines
+
+
 def render(res: Result, opts: Options) -> str:
     out = [""]
-    if res.query != res.question:
-        out.append(f'sent to both databases: "{res.query}"   (rewritten by the LLM)')
+    out += describe_intent(res)
     if res.note:
         out.append(f"note: {res.note}")
     for name, arm, notes in (("OpenSearch", opts.os_arm, OS_ARMS), ("Neo4j", opts.neo_arm, NEO_ARMS)):
-        reordered = " - re-ordered by the LLM" if res.reranked.get(name) else (" - LLM re-order failed, native order" if name in res.reranked else "")
-        out.append(f"{name}  [{arm}: {notes[arm]}]  {res.ms[name]:.0f} ms{reordered}")
+        judged = " - judged by the LLM" if res.judged.get(name) else (" - LLM scores unusable, native order" if name in res.judged else "")
+        out.append(f"{name}  [{arm}: {notes[arm]}]  {res.ms[name]:.0f} ms{judged}")
         if opts.debug:
-            out.append(f"  debug: {len(res.trace.get(name, []))} request(s) sent to {name} (long lists abbreviated)")
+            out.append(f"  debug: {sum(1 for kind, _, _ in res.trace.get(name, []) if kind != 'step')} request(s) sent to {name} (long lists abbreviated)")
             out += format_trace(res.trace.get(name, []))
             for note in res.notes.get(name, []):
                 out += textwrap.wrap(note, 112, initial_indent="    ", subsequent_indent="      ", break_long_words=False)
         for rank, r in enumerate(res.rows[name], start=1):
-            was = f"  (was #{r['native']})" if res.reranked.get(name) and r["native"] != rank else ""
-            out.append(f"  {rank}  {r['topic']:14s} {r['score']:.4f}  via {r['via']:5s} {textwrap.shorten(r['text'], 92, placeholder='...')}{was}")
+            rel = f"[{r['rel']}/3] " if "rel" in r else ""
+            tag = f"  [{r['concept']}]" if r.get("concept") else ""
+            was = f"  (was #{r['native']})" if res.judged.get(name) and r["native"] != rank else ""
+            out.append(f"  {rank}  {r['topic']:14s} {r['score']:.4f}  via {r['via']:5s} {rel}{shown(r)}{tag}{was}")
         if not res.rows[name]:
-            out.append("  (nothing matched)")
+            out.append("  (nothing relevant found)" if res.judged.get(name) else "  (nothing matched)")
     both = overlap(res.rows["OpenSearch"], res.rows["Neo4j"])
     out.append(f"agreement: same #1: {'yes' if both['same_first'] else 'no'} | in both: {', '.join(both['both']) or '-'} | "
                f"only OpenSearch: {', '.join(both['only_first']) or '-'} | only Neo4j: {', '.join(both['only_second']) or '-'}")
@@ -347,19 +444,32 @@ def render(res: Result, opts: Options) -> str:
     return "\n".join(out)
 
 
-def main() -> None:
+def make_parser() -> argparse.ArgumentParser:
+    """The command line of this script (kept apart from main() so the tests can build the same Options from the same arguments)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--provider", choices=sorted(DEFAULT_MODELS), default="openrouter")
     parser.add_argument("--model", help="default: anthropic/claude-haiku-5.5 (openrouter) or qwen3:8b (ollama)")
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_URL", "http://localhost:11434"))
     parser.add_argument("--no-llm", action="store_true", help="retrieval only")
-    parser.add_argument("--rewrite", action="store_true", help="LLM turns the question into a keyword query before searching")
-    parser.add_argument("--rerank", action="store_true", help="LLM re-orders each database's candidates")
+    parser.add_argument("--no-rewrite", action="store_true", help="do not let the LLM analyse the question: search it as typed")
+    parser.add_argument("--no-rerank", action="store_true", help="do not let the LLM score the candidates: keep each database's own order")
+    for flag in ("--one-shot", "--rewrite", "--rerank"):   # the search is always one-shot, and both LLM steps are on by default
+        parser.add_argument(flag, action="store_true", help="accepted and does nothing (the default)")
     parser.add_argument("--judge", action="store_true", help="LLM says which answer is better supported")
     parser.add_argument("--os-arm", choices=list(OS_ARMS), default="hybrid")
     parser.add_argument("--neo-arm", choices=list(NEO_ARMS), default="n_hyb")
     parser.add_argument("--top", type=int, default=5, help=f"rows shown per database (1-{POOL})")
     parser.add_argument("--debug", action="store_true", help="print the exact requests sent to each database")
+    return parser
+
+
+def options_from(args: argparse.Namespace, llm: Optional[LLM]) -> Options:
+    """What the arguments mean for ask(): both LLM steps are on unless switched off; without an LLM they do nothing and --judge is dropped."""
+    return Options(args.os_arm, args.neo_arm, args.top, not args.no_rewrite, not args.no_rerank, args.judge and llm is not None, args.debug)
+
+
+def main() -> None:
+    parser = make_parser()
     args = parser.parse_args()
     load_env()
     if not 1 <= args.top <= POOL:
@@ -374,8 +484,8 @@ def main() -> None:
             print(f"Ollama is not answering at {args.ollama_url}: showing retrieval only")
         else:
             llm = lambda system, user: chat(args.provider, model, system, user, url=args.ollama_url)  # noqa: E731
-    if llm is None and (args.rewrite or args.rerank or args.judge):
-        print("--rewrite / --rerank / --judge need an LLM and are ignored in this run")
+    if llm is None and args.judge:
+        print("--judge needs an LLM and is ignored in this run")
 
     try:
         docs = corpus.load_corpus()
@@ -395,13 +505,12 @@ def main() -> None:
         found = data_load.problems(docs, index, driver)
         if found:
             sys.exit("The databases do not hold the story files:\n  " + "\n  ".join(found) + "\nLoad them with: python data_load.py --reload")
-        stores = Stores(index, ns.StoryGraph.attach(driver, embedder), embedder, corpus.originals(docs))
-        opts = Options(args.os_arm, args.neo_arm, args.top, args.rewrite and llm is not None, args.rerank and llm is not None,
-                       args.judge and llm is not None, args.debug)
+        stores = Stores(index, ns.StoryGraph.attach(driver, embedder), embedder, corpus.originals(docs), {d["id"]: d["text"] for d in docs})
+        opts = options_from(args, llm)
         ask("warm up", stores, Options(args.os_arm, args.neo_arm), None)   # the first search pays for model and connection start-up
-        steps = [name for name, on in (("rewrite", opts.rewrite), ("rerank", opts.rerank), ("judge", opts.judge)) if on]
+        steps = [name for name, on in (("rewrite", opts.rewrite), ("rerank", opts.rerank), ("judge", opts.judge)) if on and llm]
         print(f"\n{len(docs)} texts / {len(stores.originals)} stories (identical files) loaded in both databases. "
-              f"LLM: {f'{args.provider} {model}' if llm else 'off'}. Extra steps: {', '.join(steps) or 'none (plain run)'}{'; debug on' if opts.debug else ''}.")
+              f"LLM: {f'{args.provider} {model}' if llm else 'off'}. LLM steps: {', '.join(steps) or 'none'}{'; debug on' if opts.debug else ''}.")
         print("Try:\n  " + "\n  ".join(SAMPLES) + "\n(/quit or Ctrl-D to leave)")
         while True:
             try:

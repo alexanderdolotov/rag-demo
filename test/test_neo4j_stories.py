@@ -17,6 +17,7 @@ import compare_stories as cs  # noqa: E402
 import corpus  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
+import retrieval  # noqa: E402
 
 INDEX = "stories_cmp_test"
 DOCS = corpus.load_corpus()
@@ -114,11 +115,41 @@ def test_the_full_text_arm_finds_a_possessive_and_an_accented_word_by_their_plai
     assert tiny_graph.ft("the of and", 5) == []                      # only stop words: nothing is sent to Neo4j
 
 
+def test_a_query_with_tiers_weighs_each_word_by_its_tier_and_expands_only_the_subject(tiny_graph):
+    weights, subject = tiny_graph._weights(retrieval.Query(core=("frog",), related=("lantern", "frog"), context=("bread", "zzzunknown")))
+    assert weights == {"frog": retrieval.TIER_WEIGHT["core"], "lantern": retrieval.TIER_WEIGHT["related"], "bread": retrieval.TIER_WEIGHT["context"]}
+    assert subject == ["frog"]                                            # an unknown word is dropped; related and context words are not expanded
+    assert tiny_graph._weights("frog lantern") == ({"frog": 1.0, "lantern": 1.0}, ["frog", "lantern"])      # a plain string is as before
+
+
+def test_the_expansion_shares_alpha_times_the_total_weight_of_the_query():
+    expanded = ns.StoryGraph._expanded(None, {"a": 1.0, "b": 0.33}, {"x": 1.0, "y": 1.0})
+    assert expanded["x"] + expanded["y"] == pytest.approx(ns.ALPHA * 1.33)
+
+
+def test_the_full_text_arm_boosts_the_tiers_with_lucenes_own_syntax_and_core_words_win(tiny_graph):
+    sent = []
+    ns.TRACE = lambda cypher, params: sent.append(params)
+    try:
+        tiny_graph.ft(retrieval.Query(core=("bread",), context=("frog",)), 5)
+    finally:
+        ns.TRACE = None
+    assert sent[0]["q"] == f"bread^{retrieval.TIER_WEIGHT['core']} frog^{retrieval.TIER_WEIGHT['context']}"
+    assert [r["topic"] for r in tiny_graph.ft(retrieval.Query(core=("bread",), context=("frog",)), 5)][0] == "b"          # the core word beats the side word
+    assert [r["topic"] for r in tiny_graph.ft(retrieval.Query(core=("frog",), context=("bread",)), 5)][0] == "a"
+
+
+def test_the_word_link_arm_ranks_by_tier_too(tiny_graph):
+    assert tiny_graph.co(retrieval.Query(core=("bread",), related=("frog",)), 5)[0]["topic"] == "b"
+    assert tiny_graph.co(retrieval.Query(core=("frog",), related=("bread",)), 5)[0]["topic"] == "a"
+
+
 def test_asking_for_one_graph_arm_returns_what_running_all_of_them_returns(tiny_graph):
-    everything = tiny_graph.arms("frog lantern", 5)
-    assert list(everything) == ["n_ft", "n_co", "n_hyb", "n_story"]   # no vectors, so no n_vec / n_term
-    for arm in everything:
-        assert tiny_graph.arms("frog lantern", 5, only=[arm]) == {arm: everything[arm]}, arm
+    for query in ("frog lantern", retrieval.Query(core=("frog",), related=("lantern",), context=("bread",))):
+        everything = tiny_graph.arms(query, 5)
+        assert list(everything) == ["n_ft", "n_co", "n_hyb", "n_story"]   # no vectors, so no n_vec / n_term
+        for arm in everything:
+            assert tiny_graph.arms(query, 5, only=[arm]) == {arm: everything[arm]}, arm
     with pytest.raises(ValueError, match="no such search arm: n_vec"):
         tiny_graph.arms("frog", only=["n_vec"])
 

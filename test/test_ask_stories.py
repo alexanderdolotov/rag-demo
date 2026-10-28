@@ -7,6 +7,7 @@ LLM (skipped when a service or sentence-transformers is missing). No real LLM is
 """
 import json
 import re
+import textwrap
 
 import pytest
 
@@ -15,12 +16,15 @@ pytest.importorskip("nltk")
 
 import ask_stories as ask  # noqa: E402
 import corpus  # noqa: E402
+import intent as it  # noqa: E402
 import neo4j_stories as ns  # noqa: E402
 import opensearch_stories as os_s  # noqa: E402
+import retrieval  # noqa: E402
 
 
 DOCS = corpus.load_corpus()
 ORIGINALS = corpus.originals(DOCS)
+TEXTS = {d["id"]: d["text"] for d in DOCS}
 
 
 def hit(topic, version, score):
@@ -42,42 +46,11 @@ def test_the_answer_prompt_holds_exactly_the_given_passages_numbered():
     assert ORIGINALS["rocket"] not in prompt and prompt.endswith("Question: what was baked?")
 
 
-@pytest.mark.parametrize("reply, n, expected", [
-    ("```json\n[3, 1, 2]\n```", 3, [3, 1, 2]),
-    ("The best order is [2,1] - hope that helps", 3, [2, 1, 3]),         # numbers left out go last
-    ("[2, 2, 9, 1]", 3, [2, 1, 3]),                                       # duplicates and out-of-range numbers dropped
-    ("I cannot rank these", 3, None),
-    ("[]", 3, None),
-    ("[true, 1.5, \"2\"]", 3, None),                                      # only real integers count
-    ("[not json]", 3, None),
-])
-def test_parse_ranking(reply, n, expected):
-    assert ask.parse_ranking(reply, n) == expected
-
-
-def test_rerank_reorders_rows_and_keeps_their_native_rank():
-    rows = ask.collapse([hit("bread", "orig", 3.0), hit("lost_dog", "orig", 2.0), hit("rocket", "orig", 1.0)], ORIGINALS)
-    reordered, ok = ask.rerank("q", rows, lambda system, user: "[3,1,2]")
-    assert ok and [r["topic"] for r in reordered] == ["rocket", "bread", "lost_dog"]
-    assert [r["native"] for r in reordered] == [3, 1, 2]
-
-
-def test_rerank_keeps_the_native_order_when_the_reply_is_unusable():
-    rows = ask.collapse([hit("bread", "orig", 3.0), hit("lost_dog", "orig", 2.0)], ORIGINALS)
-    for reply in ("sorry, no", "[LLM error: HTTP 500]"):
-        reordered, ok = ask.rerank("q", rows, lambda system, user, r=reply: r)
-        assert not ok and reordered == rows
-
-
 def test_overlap():
     a = [{"topic": t} for t in ("x", "y", "z")]
     b = [{"topic": t} for t in ("x", "z", "w")]
     assert ask.overlap(a, b) == {"same_first": True, "both": ["x", "z"], "only_first": ["y"], "only_second": ["w"]}
     assert ask.overlap(a, [])["same_first"] is False
-
-
-def test_rewrite_is_cleaned_to_one_line_of_keywords():
-    assert ask.clean_rewrite('"import duties\n tariffs   customs"') == "import duties tariffs customs"
 
 
 def test_the_judge_prompt_labels_both_answers_with_their_own_passages():
@@ -86,9 +59,96 @@ def test_the_judge_prompt_labels_both_answers_with_their_own_passages():
     assert prompt.index("Answer A: bread answer") < prompt.index("Passages for answer B") < prompt.index("Answer B: rocket answer")
 
 
-def test_the_optional_llm_steps_are_off_by_default():
+# --------------------------------------------------------------------------- the sentence shown beside a result
+def stems(query):
+    return {stem for stem, _ in ns.tokens(query)}
+
+
+SENTENCE = "The board said on Thursday that after a lengthy review of the many options in front of it the company would pay a special dividend of two dollars a share."
+
+
+def test_a_sentence_that_fits_is_shown_whole():
+    assert ask.excerpt("A short one.", (2, 7)) == "A short one."
+
+
+def test_a_long_sentence_is_cut_around_the_hit_with_dots_where_text_was_left_out():
+    start = SENTENCE.index("dividend")
+    out = ask.excerpt(SENTENCE, (start, start + len("dividend")), 60)
+    assert out.startswith("...") and out.endswith("...") and len(out) <= 60
+    assert abs((out.index("dividend") + 4) - len(out) / 2) < 10          # the word sits in the middle
+    assert all(word in SENTENCE.split() for word in out.replace("...", " ").split())     # nothing is cut through a word
+
+
+def test_near_the_start_or_end_of_the_sentence_there_are_no_dots_on_that_side():
+    assert ask.excerpt(SENTENCE, (4, 9), 60).startswith("The board") and ask.excerpt(SENTENCE, (4, 9), 60).endswith("...")
+    end = len(SENTENCE) - 1
+    out = ask.excerpt(SENTENCE, (end - 5, end), 60)
+    assert out.startswith("...") and out.endswith("share.")
+
+
+def test_the_cut_keeps_the_whole_stretch_that_holds_several_query_words():
+    text = "Everything about the bonfire at the old festival was loud, and then each person throws a handful of grain into the flames before leaving."
+    out = ask.evidence(text, stems("bonfire grain"), 90)
+    assert "bonfire" in out and "grain" in out and len(out) <= 90
+
+
+def test_the_sentence_with_the_most_different_query_words_wins_and_the_first_one_on_a_tie():
+    text = "Duty came first. The company paid duty and tariff costs. Later, duty again."
+    assert ask.evidence(text, stems("duty tariff")) == "The company paid duty and tariff costs."
+    assert ask.evidence("Duty one. Duty two.", stems("duty")) == "Duty one."
+
+
+def test_query_words_are_matched_by_stem_and_a_word_nobody_wrote_gives_nothing():
+    assert ask.evidence("They owed a duty to the town.", stems("duties")) == "They owed a duty to the town."
+    assert ask.evidence("The frog sat still.", stems("ceo")) is None
+    assert ask.evidence("The frog sat still.", stems("the of and")) is None          # only stop words: nothing to look for
+
+
+def test_the_snippet_comes_from_the_version_that_matched_else_the_original_else_there_is_none():
+    stores = ask.Stores("i", None, None, {"a": "The original talks about frogs."}, {"a:orig": "The original talks about frogs.", "a:rw1": "A toad sat on a log."})
+    row = lambda: {"topic": "a", "via": "rw1"}  # noqa: E731
+    for query, expected in (("toad", ("A toad sat on a log.", "rw1")), ("frogs", ("The original talks about frogs.", "orig"))):
+        rows = [row()]
+        ask.add_snippets(rows, query, stores)
+        assert (rows[0]["snippet"], rows[0]["snippet_from"]) == expected, query
+    rows = [row()]
+    ask.add_snippets(rows, "hello", stores)
+    assert "snippet" not in rows[0]
+
+
+def test_question_filler_is_not_evidence_for_a_match():
+    text = "My daughter asked what it was carrying. The night watchman locked up."
+    stores = ask.Stores("i", None, None, {"a": text}, {"a:orig": text})
+    rows = [{"topic": "a", "via": "orig"}]
+    ask.add_snippets(rows, "what were the night watchman's responsibilities?", stores)
+    assert rows[0]["snippet"] == "The night watchman locked up."                # not the sentence that merely contains "what"
+    rows = [{"topic": "a", "via": "orig"}]
+    ask.add_snippets(rows, "what were they", stores)                           # nothing but filler: nothing to point at
+    assert "snippet" not in rows[0]
+
+
+def test_what_is_shown_beside_a_result():
+    base = {"topic": "a", "via": "rw1", "text": "The start of the story. " + "More words follow here. " * 10}
+    assert ask.shown(dict(base, snippet="A toad sat.", snippet_from="rw1")) == "A toad sat."
+    assert ask.shown(dict(base, snippet="A frog sat.", snippet_from="orig")) == "[orig] A frog sat."        # not the version that matched: say so
+    assert ask.shown(base).startswith("The start of the story.") and ask.shown(base).endswith("...") and len(ask.shown(base)) <= ask.SNIPPET_WIDTH
+
+
+def test_the_answer_prompt_says_which_conditions_the_passages_may_not_cover():
+    rows = [{"text": "A loaf."}]
+    assert ask.answer_prompt("q?", rows, ["near the user"]) == (
+        "Passages:\n[1] A loaf.\n\nThe question also asks for: near the user. If the passages do not show whether that holds, say so.\n\nQuestion: q?")
+
+
+def test_format_trace_shows_a_step_as_a_header_and_numbers_only_the_requests():
+    text = "\n".join(ask.format_trace([("step", "core: bread", None), ("http", "POST /a", {"q": 1}), ("step", "core: bread | related: loaf", None),
+                                       ("http", "POST /b", {"q": 2})]))
+    assert text.index("-- core: bread --") < text.index("1. POST /a") < text.index("-- core: bread | related: loaf --") < text.index("2. POST /b")
+
+
+def test_the_defaults_use_both_llm_steps_and_leave_the_judge_off():
     opts = ask.Options()
-    assert (opts.rewrite, opts.rerank, opts.judge) == (False, False, False) and opts.top == 5
+    assert (opts.rewrite, opts.rerank, opts.judge) == (True, True, False) and opts.top == 5
 
 
 def test_env_file_fills_missing_variables_but_never_overrides_the_environment(tmp_path, monkeypatch):
@@ -169,21 +229,28 @@ def test_failures_become_error_text_and_never_leak_the_key():
 
 
 # --------------------------------------------------------------------------- the whole flow, fake LLM, real databases
-class FakeLLM:
-    """Answers by role (the system prompt) and records every call."""
+ANALYSIS = {"concepts": [{"name": "tariffs", "core": ["tariff", "duties"], "related": ["customs", "levies"]}], "must": [], "context": [], "unverifiable": []}
 
-    def __init__(self, rewrite="tariff duties customs", fail=False):
-        self.calls, self.rewrite, self.fail = [], rewrite, fail
+
+class FakeLLM:
+    """Answers by role (the system prompt) and records every call. `scores` maps a story to the score it gets (0 for any other story), or,
+    keyed by concept name, one such table per concept."""
+
+    def __init__(self, analysis=ANALYSIS, scores=None, bad_scores=False, fail=False):
+        self.calls, self.analysis, self.scores, self.bad_scores, self.fail = [], analysis, scores or {}, bad_scores, fail
 
     def __call__(self, system, user):
         self.calls.append((system, user))
         if self.fail:
             return "[LLM error: boom]"
-        if system == ask.REWRITE_SYSTEM:
-            return self.rewrite
-        if system == ask.RERANK_SYSTEM:
-            n = max(int(m) for m in re.findall(r"^\[(\d+)\]", user, flags=re.MULTILINE))
-            return json.dumps(list(range(n, 0, -1)))                     # exactly reversed
+        if system == it.ANALYZE_SYSTEM:
+            return self.analysis if isinstance(self.analysis, str) else json.dumps(self.analysis)
+        if system == it.SCORE_SYSTEM:
+            if self.bad_scores:
+                return "I would rather not"
+            subject = re.search(r"^Subject to judge the passages against: (.*?) \(core words", user, flags=re.MULTILINE).group(1)
+            table = self.scores.get(subject, self.scores)
+            return json.dumps({pid: table.get(pid, 0) for pid in re.findall(r"^\[(\w+)\] ", user, flags=re.MULTILINE)})
         if system == ask.JUDGE_SYSTEM:
             return "A is better supported."
         return "answer based on [1]"
@@ -212,7 +279,7 @@ def stores(embedder):
     os_s.build_index(index, embedder, DOCS)
     driver = ns.connect()
     try:
-        yield ask.Stores(index, ns.build_graph(driver, ns.prepare(embedder, DOCS), "all", "all", embedder), embedder, ORIGINALS)
+        yield ask.Stores(index, ns.build_graph(driver, ns.prepare(embedder, DOCS), "all", "all", embedder), embedder, ORIGINALS, TEXTS)
     finally:
         driver.close()
         os_s.drop_index(index)
@@ -223,7 +290,7 @@ Q = "Is the company being hurt by import duties?"
 
 def test_retrieval_only_returns_five_stories_per_database(stores):
     res = ask.ask(Q, stores, ask.Options(), None)
-    assert set(res.rows) == {"OpenSearch", "Neo4j"} and res.answers == {} and res.query == Q
+    assert set(res.rows) == {"OpenSearch", "Neo4j"} and res.answers == {} and res.question == Q
     for name, rows in res.rows.items():
         assert len(rows) == 5 and len({r["topic"] for r in rows}) == 5, name
         assert rows[0]["topic"] in ("tariff_hurt", "tariff_margin"), name
@@ -231,71 +298,149 @@ def test_retrieval_only_returns_five_stories_per_database(stores):
     assert all(ms > 0 for ms in res.ms.values())
 
 
-def test_the_plain_run_makes_one_answer_call_per_database_from_that_databases_own_rows(stores):
-    llm = FakeLLM()
+def test_each_result_shows_the_sentence_where_the_query_words_occur_not_the_start_of_the_story(stores):
+    res = ask.ask("bonfire grain", stores, ask.Options(), None)
+    for name, rows in res.rows.items():
+        row = next((r for r in rows if r["topic"] == "village_customs"), None)
+        assert row is not None, f"{name} did not return village_customs"
+        words = row["snippet"].lower()
+        assert ("bonfire" in words or "grain" in words) and not words.startswith("every autumn") and len(row["snippet"]) <= ask.SNIPPET_WIDTH, name
+        assert row["text"] == ORIGINALS["village_customs"]                    # what the LLM is given is still the original
+    assert "bonfire" in ask.render(res, ask.Options())
+
+
+def test_a_result_with_none_of_the_query_words_in_it_shows_the_start_of_the_story(stores):
+    res = ask.ask("zxqv blorf", stores, ask.Options(), None)                # only the vectors can match this
+    rows = [r for rows in res.rows.values() for r in rows]
+    assert rows and not any("snippet" in r for r in rows)
+    assert all(textwrap.shorten(r["text"], ask.SNIPPET_WIDTH, placeholder="...") in ask.render(res, ask.Options()) for r in rows)
+
+
+TARIFFS = {"tariff_hurt": 3, "tariff_margin": 2}
+
+
+def test_the_default_run_analyses_the_question_scores_the_candidates_and_answers_from_what_scored_well(stores):
+    llm = FakeLLM(scores=TARIFFS)
     res = ask.ask(Q, stores, ask.Options(), llm)
-    assert llm.roles() == [ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM]
-    assert sorted(u for _, u in llm.calls) == sorted(ask.answer_prompt(Q, res.rows[n]) for n in res.rows)
-    assert set(res.answers) == {"OpenSearch", "Neo4j"} and res.judge == ""
+    assert res.intent.concepts[0].core == ("tariff", "duties")
+    assert llm.roles() == [it.ANALYZE_SYSTEM, it.SCORE_SYSTEM, ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM]       # one analysis, one scoring call for both databases
+    for name, rows in res.rows.items():
+        assert [r["topic"] for r in rows] == ["tariff_hurt", "tariff_margin"], name                       # only what scored well, best first
+        assert [r["rel"] for r in rows] == [3, 2], name
+    assert res.judged == {"OpenSearch": True, "Neo4j": True}
+    assert all("[2]" in u and "[3]" not in u for s, u in llm.calls if s == ask.ANSWER_SYSTEM)              # the LLM answers from those two passages only
+    text = ask.render(res, ask.Options())
+    assert "understood: tariffs" in text and "[3/3]" in text and "judged by the LLM" in text
 
 
-def test_a_database_that_returns_nothing_is_not_asked_to_rerank_or_answer(stores):
+def test_without_the_rewrite_the_question_is_searched_as_typed_and_the_scoring_judges_against_the_question(stores):
+    llm = FakeLLM(scores=TARIFFS)
+    res = ask.ask(Q, stores, ask.Options(rewrite=False), llm)
+    assert llm.roles() == [it.SCORE_SYSTEM, ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM] and res.intent is None
+    assert f"Subject to judge the passages against: {Q} (core words: {Q})" in llm.calls[0][1]
+    assert all([r["topic"] for r in rows] == ["tariff_hurt", "tariff_margin"] for rows in res.rows.values())
+
+
+def test_without_the_rerank_the_databases_own_order_is_kept_after_the_analysis(stores):
     llm = FakeLLM()
-    opts = ask.Options(os_arm="stem", neo_arm="n_ft", rerank=True, judge=True)
+    res = ask.ask(Q, stores, ask.Options(rerank=False), llm)
+    assert llm.roles() == [it.ANALYZE_SYSTEM, ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM] and res.judged == {}
+    assert all(len(rows) == 5 and "rel" not in rows[0] for rows in res.rows.values())
+
+
+def test_the_conditions_reach_the_scoring_and_the_unverifiable_ones_reach_the_answer_step(stores):
+    analysis = dict(ANALYSIS, must=["benefited, not hurt"], unverifiable=["near the user"])
+    llm = FakeLLM(analysis=analysis, scores=TARIFFS)
+    res = ask.ask(Q, stores, ask.Options(), llm)
+    scoring = next(u for s, u in llm.calls if s == it.SCORE_SYSTEM)
+    assert "Conditions a passage must meet: benefited, not hurt" in scoring and "Ignore these, a story cannot show them: near the user" in scoring
+    answers = [u for s, u in llm.calls if s == ask.ANSWER_SYSTEM]
+    assert answers and all("The question also asks for: near the user." in u for u in answers)
+    text = ask.render(res, ask.Options())
+    assert "a passage must meet: benefited, not hurt" in text and "no story can show: near the user" in text
+
+
+def test_each_concept_is_searched_and_scored_on_its_own_and_the_results_take_turns_main_concept_first(stores):
+    two = {"concepts": [{"name": "tariffs", "core": ["tariff"]}, {"name": "baking", "core": ["bread", "bake"]}], "must": [], "context": [], "unverifiable": []}
+    llm = FakeLLM(analysis=two, scores={"tariffs": {"tariff_hurt": 3, "tariff_margin": 3}, "baking": {"bread": 3, "village_customs": 2}})
+    res = ask.ask("tariffs, and who bakes?", stores, ask.Options(top=4), llm)
+    assert llm.roles().count(it.SCORE_SYSTEM) == 2
+    for name, rows in res.rows.items():
+        assert [r["concept"] for r in rows] == ["tariffs", "baking", "tariffs", "baking"], name
+        assert {r["topic"] for r in rows if r["concept"] == "baking"} == {"bread", "village_customs"}, name
+    text = ask.render(res, ask.Options())
+    assert "main concept: tariffs" in text and "concept 2: baking" in text and "[baking]" in text
+
+
+def test_an_analysis_that_cannot_be_read_means_the_question_is_searched_as_typed_and_still_scored(stores):
+    llm = FakeLLM(analysis="I would rather not", scores=TARIFFS)
+    res = ask.ask(Q, stores, ask.Options(), llm)
+    assert res.intent is None and "could not be read" in res.note
+    assert llm.roles() == [it.ANALYZE_SYSTEM, it.SCORE_SYSTEM, ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM] and res.rows["OpenSearch"]
+
+
+def test_scores_that_cannot_be_read_leave_each_databases_own_order(stores):
+    res = ask.ask(Q, stores, ask.Options(), FakeLLM(bad_scores=True))
+    assert res.judged == {"OpenSearch": False, "Neo4j": False} and "scores could not be read" in res.note
+    assert all(len(rows) == 5 and "rel" not in rows[0] for rows in res.rows.values())
+    assert "native order" in ask.render(res, ask.Options())
+
+
+def test_nothing_that_scores_above_zero_means_nothing_is_shown_and_nothing_is_answered(stores):
+    llm = FakeLLM(analysis={"concepts": [{"name": "zxqv", "core": ["zxqv"]}]})        # every candidate scores 0
+    opts = ask.Options(judge=True)
+    res = ask.ask("zxqv", stores, opts, llm)
+    assert res.rows == {"OpenSearch": [], "Neo4j": []} and res.answers == {} and res.judge == ""
+    assert llm.roles() == [it.ANALYZE_SYSTEM, it.SCORE_SYSTEM] and ask.render(res, opts).count("(nothing relevant found)") == 2
+
+
+def test_a_database_that_returns_nothing_is_not_asked_to_score_or_answer(stores):
+    llm = FakeLLM()
+    opts = ask.Options(os_arm="stem", neo_arm="n_ft", rewrite=False, judge=True)
     res = ask.ask("the of and", stores, opts, llm)                       # nothing but stop words: no search term is left
     assert res.rows == {"OpenSearch": [], "Neo4j": []}
-    assert llm.calls == [] and res.answers == {} and res.reranked == {} and res.judge == ""
-    assert ask.render(res, opts).count("(nothing matched)") == 2
+    assert llm.calls == [] and res.answers == {} and res.judge == ""
+    assert ask.render(res, opts).count("(nothing relevant found)") == 2
+
+
+def test_without_an_llm_the_question_is_searched_once_as_typed(stores):
+    res = ask.ask(Q, stores, ask.Options(), None)
+    assert res.intent is None and res.judged == {} and res.note == "" and all(len(rows) == 5 for rows in res.rows.values())
 
 
 def test_the_judge_needs_an_answer_from_both_databases(stores, monkeypatch):
     monkeypatch.setattr(ask, "search_neo4j", lambda *args, **kwargs: [])
     llm = FakeLLM()
-    res = ask.ask(Q, stores, ask.Options(judge=True), llm)
+    res = ask.ask(Q, stores, ask.Options(rewrite=False, rerank=False, judge=True), llm)
     assert list(res.answers) == ["OpenSearch"] and res.judge == "" and llm.roles() == [ask.ANSWER_SYSTEM]
 
 
-def test_rewrite_changes_what_the_databases_are_searched_with_but_not_the_question_the_llm_answers(stores):
-    llm = FakeLLM(rewrite="levy refund customs")
-    res = ask.ask("how did it go for them?", stores, ask.Options(rewrite=True), llm)
-    assert res.query == "levy refund customs" and res.note == ""
-    assert all(rows[0]["topic"].startswith("tariff") for rows in res.rows.values())
-    assert all("Question: how did it go for them?" in u for s, u in llm.calls if s == ask.ANSWER_SYSTEM)
-    assert llm.roles().count(ask.REWRITE_SYSTEM) == 1
-
-
-def test_rerank_puts_the_llm_order_on_screen_and_remembers_the_native_rank(stores):
-    plain = ask.ask(Q, stores, ask.Options(), None)
-    llm = FakeLLM()
-    res = ask.ask(Q, stores, ask.Options(rerank=True), llm)
-    assert res.reranked == {"OpenSearch": True, "Neo4j": True}
-    for name in res.rows:
-        assert res.rows[name][0]["native"] > 5                      # the previously last candidate is now first
-        assert res.rows[name][0]["topic"] not in [r["topic"] for r in plain.rows[name]]
-    assert llm.roles().count(ask.RERANK_SYSTEM) == 2
-    assert "(was #" in ask.render(res, ask.Options(rerank=True))
-
-
-def test_all_three_steps_make_six_llm_calls_and_the_judge_order_is_random(stores):
-    opts = ask.Options(rewrite=True, rerank=True, judge=True)
-    llm = FakeLLM()
+def test_all_the_llm_steps_together_make_five_calls_and_the_judge_order_is_random(stores):
+    opts = ask.Options(judge=True)
+    llm = FakeLLM(scores=TARIFFS)
     res = ask.ask(Q, stores, opts, llm, rng=Coin(0.9))
-    assert len(llm.calls) == 6 and llm.roles()[0] == ask.REWRITE_SYSTEM and llm.roles()[-1] == ask.JUDGE_SYSTEM
+    assert llm.roles() == [it.ANALYZE_SYSTEM, it.SCORE_SYSTEM, ask.ANSWER_SYSTEM, ask.ANSWER_SYSTEM, ask.JUDGE_SYSTEM]
     assert res.judge_order == ("Neo4j", "OpenSearch") and res.judge == "A is better supported."
     judge_prompt = llm.calls[-1][1]
     assert judge_prompt.index(res.answers["Neo4j"]) < judge_prompt.index("Passages for answer B")
-    assert ask.ask(Q, stores, opts, FakeLLM(), rng=Coin(0.1)).judge_order == ("OpenSearch", "Neo4j")
+    assert ask.ask(Q, stores, opts, FakeLLM(scores=TARIFFS), rng=Coin(0.1)).judge_order == ("OpenSearch", "Neo4j")
 
 
-def test_llm_failures_degrade_to_the_plain_native_results(stores):
+def test_each_concept_query_has_boosted_tiers_and_shows_up_in_the_debug_trace(stores):
+    res = ask.ask(Q, stores, ask.Options(debug=True), FakeLLM(scores=TARIFFS))
+    assert [t for kind, t, _ in res.trace["OpenSearch"] if kind == "step"] == ["core: tariff, duties | related: customs, levies"]
+    bodies = [p for kind, _, p in res.trace["OpenSearch"] if kind == "http"]
+    assert len(bodies) == 2 and [c["match"]["text.syn"]["boost"] for c in bodies[0]["query"]["bool"]["should"]] == [1.0, retrieval.TIER_WEIGHT["related"]]
+    assert "-- core: tariff, duties | related: customs, levies --" in ask.render(res, ask.Options(debug=True))
+
+
+def test_llm_failures_degrade_to_a_plain_search_with_the_databases_own_order(stores):
     plain = ask.ask(Q, stores, ask.Options(), None)
-    res = ask.ask(Q, stores, ask.Options(rewrite=True, rerank=True, judge=True), FakeLLM(fail=True))
-    assert res.query == Q and "rewrite failed" in res.note
-    assert res.reranked == {"OpenSearch": False, "Neo4j": False}
+    res = ask.ask(Q, stores, ask.Options(judge=True), FakeLLM(fail=True))
+    assert res.intent is None and "rewrite failed" in res.note and res.judged == {"OpenSearch": False, "Neo4j": False}
     assert {n: [r["topic"] for r in rows] for n, rows in res.rows.items()} == {n: [r["topic"] for r in rows] for n, rows in plain.rows.items()}
     assert res.judge == "" and all(ask.failed(a) for a in res.answers.values())
-    text = ask.render(res, ask.Options())
-    assert "OpenSearch" in text and "Neo4j" in text and "agreement:" in text and "native order" in text
+    assert "agreement:" in ask.render(res, ask.Options())
 
 
 # --------------------------------------------------------------------------- --debug: the exact requests sent to each database
